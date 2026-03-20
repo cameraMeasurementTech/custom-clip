@@ -1,0 +1,3 @@
+# Nexis validator blacklist
+# Add one hotkey SS58 per line when needed.
+

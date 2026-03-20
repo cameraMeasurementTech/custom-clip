@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nexisgen"
+version = "0.1.0"
+description = "Nexisgen subnet miner/validator implementation."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "typer>=0.12.0",
+  "rich>=13.7.0",
+  "pydantic>=2.7.0",
+  "pydantic-settings>=2.2.1",
+  "python-dotenv>=1.0.1",
+  "pyarrow>=14.0.0",
+  "aiobotocore>=2.13.0",
+  "bittensor==9.12.2",
+  "openai>=1.40.0",
+  "yt-dlp",
+  "fastapi",
+  "uvicorn",
+  "asyncpg",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+nexis = "nexis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nexis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+

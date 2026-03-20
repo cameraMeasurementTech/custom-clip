@@ -1,0 +1,38 @@
+name: nexis-validation-api
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: nexis-validation-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexis_validation}
+      POSTGRES_USER: ${POSTGRES_USER:-nexis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexis}
+    volumes:
+      - ${NEXIS_VALIDATION_PGDATA:-./data/postgres}:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexis} -d ${POSTGRES_DB:-nexis_validation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  validation-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.validation-api
+    container_name: nexis-validation-api
+    restart: unless-stopped
+    env_file:
+      - ${VALIDATION_API_ENV_FILE:-./validation-api.env}
+    environment:
+      NEXIS_VALIDATION_API_POSTGRES_DSN: postgresql://${POSTGRES_USER:-nexis}:${POSTGRES_PASSWORD:-nexis}@postgres:5432/${POSTGRES_DB:-nexis_validation}
+    ports:
+      - "${VALIDATION_API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+

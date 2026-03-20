@@ -1,0 +1,32 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    APP_HOME=/app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        ffmpeg \
+        tini \
+        yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR ${APP_HOME}
+
+COPY pyproject.toml README.md ./
+COPY nexis ./nexis
+
+RUN pip install --upgrade pip \
+    && pip install .
+
+COPY docker/healthcheck_validator.py /usr/local/bin/healthcheck_validator.py
+RUN chmod 0555 /usr/local/bin/healthcheck_validator.py
+
+ENV NEXIS_WORKDIR=/var/lib/nexis
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 CMD ["python", "/usr/local/bin/healthcheck_validator.py"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "nexis"]
+CMD ["validate"]
