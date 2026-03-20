@@ -143,7 +143,18 @@ Miner behavior:
 
 ## Validator Setup and Run
 
+You can run a validator in either of these ways:
+
+- **Docker**: recommended for most operators because it is easier to deploy,
+  update, and keep isolated from host Python dependencies
+- **Local (non-Docker)**: supported for development, debugging, or operators
+  who prefer managing the Python environment directly
+
+Choose one setup path below. Do not run both on the same validator instance.
+
 ### Recommended: Docker validator deployment
+
+This is the best default choice for production or long-running validator nodes.
 
 ```bash
 cd docker
@@ -175,12 +186,18 @@ docker logs -f nexis-watchtower
 
 ### Local (non-Docker) validator
 
-From project root (with virtualenv active):
+Use this path if you want to run the validator directly on the host instead of
+in Docker.
+
+From project root, complete `Local Project Setup` first so the virtualenv and
+dependencies are installed. If `.env` does not already exist, create it from
+the example file:
+
 ```bash
-cp env.example .env
+cp .env.example .env
 ```
 
-Edit .env config
+Then edit `.env` with the validator settings you need and run:
 
 ```bash
 nexis validate
