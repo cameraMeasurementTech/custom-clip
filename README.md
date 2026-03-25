@@ -172,9 +172,8 @@ Edit:
 
 - `compose.env`
   - `BT_WALLET_HOST_PATH`
-  - `NEXIS_VALIDATOR_IMAGE`
 - `validator.env`
-  - wallet/network/storage/secrets values
+  - wallet/wallet_path/api_key values
 
 Start validator + watchtower:
 
