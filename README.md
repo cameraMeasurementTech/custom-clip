@@ -257,14 +257,6 @@ if all required checks pass.
    - API maintains invalid-hotkey windows (`interval_id-500` to `interval_id`)
    - validator zeros API-invalid hotkeys before submitting chain weights
 
-### Optional source-auth sidecar
-
-Run source authenticity in a separate container/process:
-
-- command: `nexis validate-source-auth`
-- uses same interval/miner/row sampling logic
-- posts invalid hotkeys to API (`POST /v1/invalid-hotkeys`)
-- treats source download anti-bot errors as fail-open (miner remains valid)
 
 ### How to observe validation results
 
@@ -324,9 +316,6 @@ nexis mine
 
 # run validator
 nexis validate
-
-# run source-auth sidecar validator
-nexis validate-source-auth
 
 # run independent owner dataset copy worker (every 60s)
 nexis sync-owner-datasets --poll-sec 60
