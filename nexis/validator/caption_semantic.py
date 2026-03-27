@@ -88,13 +88,22 @@ class CaptionSemanticChecker:
         return failures
 
     def _judge_match(self, *, client: object, caption: str, frame_paths: list[Path]) -> bool | None:
-        prompt = (
-            "You are validating whether a caption is semantically consistent with timeline-sampled "
-            "frames from a short video clip. "
-            "Return JSON only: {\"match\": true} or {\"match\": false}. "
-            "Use false only for clear mismatch."
-            f"\nCaption: {caption}"
-        )
+        prompt = f"""
+You are validating whether a caption is accurately grounded in timeline-sampled frames from a short video clip.
+
+Return JSON only:
+{{"match": true}} or {{"match": false}}
+
+Return false if:
+- any part of the caption is contradicted by the frames
+- any important detail is not visually supported
+- the caption is overly generic and fails to capture the main visible subject or action
+- the caption includes speculation or inference beyond the frames
+
+Return true only if the caption is both visually supported and specific enough to describe the clip's main content.
+
+Caption: {caption}
+"""
         content = [{"type": "text", "text": prompt}]
         for frame_path in frame_paths:
             content.append(
@@ -112,6 +121,9 @@ class CaptionSemanticChecker:
             choice = response.choices[0]
             message = getattr(choice, "message", None)
             output_text = getattr(message, "content", "") if message is not None else ""
+            print(f"================================================")
+            print(output_text)
+            print(f"================================================")
             return self._parse_match(str(output_text))
         except Exception:
             return None
