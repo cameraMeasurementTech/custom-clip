@@ -11,11 +11,10 @@ from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import TYPE_CHECKING
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
+import httpx
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
@@ -419,41 +418,30 @@ def _resolve_latest_result_url(validation_api_url: str) -> str:
     return f"{raw_url.rstrip('/')}/v1/get_latest_result"
 
 
-def _fetch_latest_result_snapshot_sync(*, url: str, timeout_sec: float) -> dict[str, Any]:
-    req = urllib_request.Request(
-        url,
-        data=None,
-        headers={"Accept": "application/json"},
-        method="GET",
-    )
+async def fetch_latest_result_snapshot(*, url: str, timeout_sec: float) -> dict[str, Any]:
+    headers = {"Accept": "application/json"}
+    read = max(float(timeout_sec), 1.0)
+    connect = min(30.0, read)
+    timeout = httpx.Timeout(connect=connect, read=read, write=read, pool=read)
     try:
-        with urllib_request.urlopen(req, timeout=float(timeout_sec)) as response:
-            status_code = int(getattr(response, "status", 200))
-            body = response.read()
-    except urllib_error.HTTPError as exc:
-        raise RuntimeError(f"latest-result request failed status={int(exc.code)}") from exc
-    except urllib_error.URLError as exc:
-        raise RuntimeError(f"latest-result request failed error={exc}") from exc
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        name = type(exc).__name__
+        detail = str(exc).strip() or repr(exc)
+        raise RuntimeError(f"latest-result request failed ({name}): {detail}") from exc
 
+    status_code = int(response.status_code)
     if status_code < 200 or status_code >= 300:
         raise RuntimeError(f"latest-result request failed status={status_code}")
 
     try:
-        parsed = json.loads(body.decode("utf-8"))
+        parsed = response.json()
     except Exception as exc:
         raise RuntimeError("latest-result response is not valid JSON") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("latest-result response must be a JSON object")
     return parsed
-
-
-
-async def fetch_latest_result_snapshot(*, url: str, timeout_sec: float) -> dict[str, Any]:
-    return await asyncio.to_thread(
-        _fetch_latest_result_snapshot_sync,
-        url=url,
-        timeout_sec=timeout_sec,
-    )
 
 
 
@@ -1300,10 +1288,24 @@ async def _run_validator_loop(
                 )
                 if should_try_submit:
                     submission_block = current_weight_epoch * WEIGHT_SUBMISSION_INTERVAL_BLOCKS
-                    snapshot = await fetch_latest_result_snapshot(
-                        url=latest_result_url,
-                        timeout_sec=settings.latest_result_timeout_sec,
-                    )
+                    snapshot: dict[str, Any]
+                    if latest_result_url:
+                        try:
+                            snapshot = await fetch_latest_result_snapshot(
+                                url=latest_result_url,
+                                timeout_sec=settings.latest_result_timeout_sec,
+                            )
+                        except RuntimeError as exc:
+                            logger.warning(
+                                "latest-result fetch failed epoch=%d url=%s: %s; "
+                                "continuing with empty API decisions for this weight pass",
+                                current_weight_epoch,
+                                latest_result_url,
+                                exc,
+                            )
+                            snapshot = {"decisions": []}
+                    else:
+                        snapshot = {"decisions": []}
 
                     decisions_raw = snapshot.get("decisions")
                     if not isinstance(decisions_raw, list):
@@ -1317,7 +1319,6 @@ async def _run_validator_loop(
                         interval_end=submission_block,
                         weight_computer=validator.weight_computer,
                     )
-                    print(f"score_totals: {score_totals}")
                     if not score_totals:
                         logger.info(
                             "no valid miner hotkeys in epoch=%d; forcing burn fallback to UID0",
@@ -1327,9 +1328,11 @@ async def _run_validator_loop(
                     else:
                         frozen_epoch_weights = validator.weight_computer.compute_weights_from_totals(dict(score_totals))
                     current_interval_id = _current_interval_start(current_block)
-                    invalid_for_submission = set(
-                        await reporter.fetch_invalid_hotkeys(interval_id=current_interval_id)
-                    )
+                    invalid_for_submission: set[str] = set()
+                    if reporter is not None:
+                        invalid_for_submission = set(
+                            await reporter.fetch_invalid_hotkeys(interval_id=current_interval_id)
+                        )
                     if invalid_for_submission:
                         for hotkey in invalid_for_submission:
                             if hotkey in frozen_epoch_weights:
@@ -1341,7 +1344,7 @@ async def _run_validator_loop(
                             "zeroed invalid hotkeys before set_weights count=%d",
                             len(invalid_for_submission),
                         )
-                    logger.info(f"frozen_epoch_weights: {frozen_epoch_weights}")
+                    logger.info("frozen_epoch_weights: %s", frozen_epoch_weights)
                     submission = await submit_weights_to_chain_async(
                         netuid=settings.netuid,
                         network=settings.bt_network,

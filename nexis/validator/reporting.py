@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -10,9 +9,9 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 from urllib.parse import urlencode, urlparse, urlunparse
+
+import httpx
 
 from ..models import ValidationDecision
 
@@ -63,7 +62,20 @@ class ValidationResultReporter:
     endpoint_url: str
     hotkey_ss58: str
     hotkey_signer: Any
-    timeout_sec: float = 10.0
+    timeout_sec: float = 60.0
+
+    def _http_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(self.timeout_sec)
+
+    async def _post_async(self, url: str, body: bytes, headers: dict[str, str]) -> int:
+        async with httpx.AsyncClient(timeout=self._http_timeout()) as client:
+            response = await client.post(url, content=body, headers=headers)
+            return int(response.status_code)
+
+    async def _get_async(self, url: str, headers: dict[str, str]) -> tuple[int, bytes]:
+        async with httpx.AsyncClient(timeout=self._http_timeout()) as client:
+            response = await client.get(url, headers=headers)
+            return int(response.status_code), bytes(response.content)
 
     async def report_interval(
         self,
@@ -76,15 +88,18 @@ class ValidationResultReporter:
 
         body = build_interval_payload(interval_id, decisions)
         endpoint = self._resolve_validation_results_url()
+        logger.error("reporting endpoint url=%s", endpoint)
         endpoint_path = self._endpoint_path(endpoint, default="/v1/validation-results")
+        logger.error("reporting endpoint path=%s", endpoint_path)
         headers = self._build_auth_headers(
             method="POST",
             path=endpoint_path,
             body=body,
         )
+        logger.error("reporting headers=%s", headers)
         headers["Content-Type"] = "application/json"
         try:
-            status_code = await asyncio.to_thread(self._post_sync, endpoint, body, headers)
+            status_code = await self._post_async(endpoint, body, headers)
             if status_code < 200 or status_code >= 300:
                 logger.warning(
                     "validation evidence POST failed interval=%d status=%d",
@@ -110,7 +125,7 @@ class ValidationResultReporter:
             "Accept": "application/json",
         }
         try:
-            status_code, body = await asyncio.to_thread(self._get_sync, url, headers)
+            status_code, body = await self._get_async(url, headers)
             if status_code < 200 or status_code >= 300:
                 logger.warning(
                     "invalid hotkeys fetch failed interval=%d status=%d",
@@ -150,7 +165,7 @@ class ValidationResultReporter:
         )
         headers["Content-Type"] = "application/json"
         try:
-            status_code = await asyncio.to_thread(self._post_sync, endpoint, body, headers)
+            status_code = await self._post_async(endpoint, body, headers)
             if status_code < 200 or status_code >= 300:
                 logger.warning(
                     "invalid hotkeys POST failed interval=%d status=%d count=%d",
@@ -209,30 +224,3 @@ class ValidationResultReporter:
             "X-Timestamp": str(timestamp),
             "X-Nonce": nonce,
         }
-
-    def _post_sync(self, url: str, body: bytes, headers: dict[str, str]) -> int:
-        req = urllib_request.Request(
-            url,
-            data=body,
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with urllib_request.urlopen(req, timeout=float(self.timeout_sec)) as response:
-                return int(getattr(response, "status", 200))
-        except urllib_error.HTTPError as exc:
-            return int(exc.code)
-
-    def _get_sync(self, url: str, headers: dict[str, str]) -> tuple[int, bytes]:
-        req = urllib_request.Request(
-            url,
-            data=None,
-            headers=headers,
-            method="GET",
-        )
-        try:
-            with urllib_request.urlopen(req, timeout=float(self.timeout_sec)) as response:
-                status_code = int(getattr(response, "status", 200))
-                return status_code, response.read()
-        except urllib_error.HTTPError as exc:
-            return int(exc.code), exc.read()

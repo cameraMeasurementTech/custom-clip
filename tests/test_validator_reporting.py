@@ -56,7 +56,7 @@ def test_report_interval_signs_and_posts(monkeypatch) -> None:  # type: ignore[n
 
     captured: dict[str, object] = {}
 
-    def fake_post_sync(url: str, body: bytes, headers: dict[str, str]) -> int:
+    async def fake_post_async(url: str, body: bytes, headers: dict[str, str]) -> int:
         captured["url"] = url
         captured["body"] = body
         captured["headers"] = dict(headers)
@@ -64,7 +64,7 @@ def test_report_interval_signs_and_posts(monkeypatch) -> None:  # type: ignore[n
 
     monkeypatch.setattr("nexis.validator.reporting.time.time", lambda: 1710000000)
     monkeypatch.setattr("nexis.validator.reporting.secrets.token_hex", lambda _n: "nonce-fixed")
-    monkeypatch.setattr(reporter, "_post_sync", fake_post_sync)
+    monkeypatch.setattr(reporter, "_post_async", fake_post_async)
 
     decision = ValidationDecision(
         miner_hotkey="miner1",
@@ -106,12 +106,12 @@ def test_fetch_invalid_hotkeys(monkeypatch) -> None:  # type: ignore[no-untyped-
         timeout_sec=2.0,
     )
 
-    def fake_get_sync(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
+    async def fake_get_async(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
         _ = headers
         assert url.endswith("/v1/invalid-hotkeys?interval_id=500")
         return 200, b'{"invalid_hotkeys":["hk1","hk2","hk1"]}'
 
-    monkeypatch.setattr(reporter, "_get_sync", fake_get_sync)
+    monkeypatch.setattr(reporter, "_get_async", fake_get_async)
     hotkeys = run_async(reporter.fetch_invalid_hotkeys(interval_id=500))
     assert hotkeys == ["hk1", "hk2"]
 
@@ -126,7 +126,7 @@ def test_post_invalid_hotkeys_signs_request(monkeypatch) -> None:  # type: ignor
     )
     captured: dict[str, object] = {}
 
-    def fake_post_sync(url: str, body: bytes, headers: dict[str, str]) -> int:
+    async def fake_post_async(url: str, body: bytes, headers: dict[str, str]) -> int:
         captured["url"] = url
         captured["body"] = body
         captured["headers"] = headers
@@ -134,7 +134,7 @@ def test_post_invalid_hotkeys_signs_request(monkeypatch) -> None:  # type: ignor
 
     monkeypatch.setattr("nexis.validator.reporting.time.time", lambda: 1710000000)
     monkeypatch.setattr("nexis.validator.reporting.secrets.token_hex", lambda _n: "nonce-fixed")
-    monkeypatch.setattr(reporter, "_post_sync", fake_post_sync)
+    monkeypatch.setattr(reporter, "_post_async", fake_post_async)
 
     ok = run_async(
         reporter.post_invalid_hotkeys(interval_id=77, invalid_hotkeys=["m2", "m1", "m1"])

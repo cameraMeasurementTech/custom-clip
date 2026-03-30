@@ -282,7 +282,7 @@ def test_get_latest_result_returns_cached_window(monkeypatch) -> None:  # type: 
         assert payload["current_block"] >= 25050
         assert payload["start_interval_id"] == payload["current_block"] - 25000
         assert payload["end_interval_id"] == payload["current_block"]
-        assert payload["refreshed_every_blocks"] == 50
+        assert payload["refreshed_every_blocks"] == 30
         # Endpoint must return only cache snapshot and never refresh on request.
         assert payload["decisions"] == []
 

@@ -84,9 +84,13 @@ class Settings(BaseSettings):
     record_info_object_key: str = Field(default="record_info.json", alias="NEXIS_RECORD_INFO_OBJECT_KEY")
 
     # Optional validator -> evidence API reporting
-    validation_api_url: str = Field(default="", alias="NEXIS_VALIDATION_API_URL")
-    validation_api_timeout_sec: float = Field(default=10.0, alias="NEXIS_VALIDATION_API_TIMEOUT_SEC")
-    latest_result_timeout_sec: float = Field(default=10.0, alias="NEXIS_LATEST_RESULT_TIMEOUT_SEC")
+    validation_api_url: str = Field(default="https://api.nexisgen.ai/v1/validation-results", alias="NEXIS_VALIDATION_API_URL")
+    validation_api_timeout_sec: float = Field(default=120.0, alias="NEXIS_VALIDATION_API_TIMEOUT_SEC")
+    latest_result_timeout_sec: float = Field(
+        default=120.0,
+        alias="NEXIS_LATEST_RESULT_TIMEOUT_SEC",
+        description="GET /v1/get_latest_result can return a large JSON window; allow a generous read timeout.",
+    )
 
     # Evidence API server settings
     validation_api_postgres_dsn: str = Field(

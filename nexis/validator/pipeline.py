@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -276,7 +277,7 @@ class ValidatorPipeline:
                 )
 
             try:
-                manifest = read_manifest(manifest_local)
+                manifest = await asyncio.to_thread(read_manifest, manifest_local)
             except Exception as exc:
                 logger.warning(
                     "manifest schema invalid hotkey=%s interval=%d error=%s",
@@ -357,7 +358,11 @@ class ValidatorPipeline:
                 )
 
             try:
-                records = read_dataset_parquet_as_model(dataset_local, spec.row_model)
+                records = await asyncio.to_thread(
+                    read_dataset_parquet_as_model,
+                    dataset_local,
+                    spec.row_model,
+                )
             except Exception as exc:
                 logger.warning(
                     "dataset schema invalid hotkey=%s interval=%d error=%s",
@@ -476,7 +481,8 @@ class ValidatorPipeline:
                     frame_paths = asset_result.first_frames_by_clip_id
 
             if self._source_authenticity_enabled and self._source_auth_only:
-                source_failures = self._check_source_authenticity(
+                source_failures = await asyncio.to_thread(
+                    self._check_source_authenticity,
                     sampled=sampled,
                     frame_paths_by_clip_id=frame_paths,
                     source_cache_dir=loaded.miner_dir / "source_cache",
