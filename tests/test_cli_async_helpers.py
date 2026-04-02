@@ -9,9 +9,11 @@ from nexis.cli import (
     _resolve_llm_runtime,
     _run_miner_loop,
     _run_validator_loop,
+    compute_score_totals_from_decisions,
 )
 from nexis.models import ValidationDecision
 from nexis.config import Settings
+from nexis.scoring import WeightComputer
 from .helpers import LocalObjectStore, run_async
 
 
@@ -388,3 +390,93 @@ def test_run_validator_loop_reports_interval_results(monkeypatch, tmp_path) -> N
         pass
 
     assert reported == [(0, 1)]
+
+
+def test_compute_score_totals_from_decisions_uses_ranked_totals() -> None:
+    decisions = [
+        {
+            "accepted": True,
+            "miner_hotkey": "miner-a",
+            "validator_hotkey": "val-1",
+            "interval_id": 10,
+            "record_count": 12,
+        },
+        {
+            "accepted": True,
+            "miner_hotkey": "miner-b",
+            "validator_hotkey": "val-1",
+            "interval_id": 10,
+            "record_count": 8,
+        },
+        {
+            "accepted": True,
+            "miner_hotkey": "miner-c",
+            "validator_hotkey": "val-2",
+            "interval_id": 10,
+            "record_count": 8,
+        },
+        {
+            "accepted": True,
+            "miner_hotkey": "miner-d",
+            "validator_hotkey": "val-2",
+            "interval_id": 10,
+            "record_count": 5,
+        },
+    ]
+
+    totals = compute_score_totals_from_decisions(
+        decisions=decisions,
+        interval_start=10,
+        interval_end=11,
+        weight_computer=WeightComputer(),
+    )
+
+    assert totals["miner-a"] == 1.0
+    assert totals["miner-b"] == 0.5
+    assert totals["miner-c"] == 0.5
+    assert totals["miner-d"] == 0.25
+
+
+def test_compute_score_totals_from_decisions_dedupes_and_accumulates_counts() -> None:
+    decisions = [
+        {
+            "accepted": True,
+            "miner_hotkey": "miner-a",
+            "validator_hotkey": "val-1",
+            "interval_id": 10,
+            "record_count": 4,
+        },
+        {
+            # Duplicate validator+interval+miner tuple: ignored.
+            "accepted": True,
+            "miner_hotkey": "miner-a",
+            "validator_hotkey": "val-1",
+            "interval_id": 10,
+            "record_count": 1000,
+        },
+        {
+            # Different interval in range: contributes to miner-a total.
+            "accepted": True,
+            "miner_hotkey": "miner-a",
+            "validator_hotkey": "val-1",
+            "interval_id": 11,
+            "record_count": 3,
+        },
+        {
+            "accepted": True,
+            "miner_hotkey": "miner-b",
+            "validator_hotkey": "val-2",
+            "interval_id": 10,
+            "record_count": 5,
+        },
+    ]
+
+    totals = compute_score_totals_from_decisions(
+        decisions=decisions,
+        interval_start=10,
+        interval_end=12,
+        weight_computer=WeightComputer(),
+    )
+
+    assert totals["miner-a"] == 1.0
+    assert totals["miner-b"] == 0.5

@@ -461,7 +461,8 @@ def compute_score_totals_from_decisions(
     interval_end: int,
     weight_computer: WeightComputer,
 ) -> dict[str, float]:
-    totals: dict[str, float] = {}
+    _ = weight_computer
+    totals_by_hotkey: dict[str, int] = {}
     seen_keys: set[tuple[str, int, str]] = set()
 
     for row in decisions:
@@ -489,12 +490,27 @@ def compute_score_totals_from_decisions(
             record_count = int(row.get("record_count", 0))
         except (TypeError, ValueError):
             record_count = 0
-        score = weight_computer.score_from_sample_count(record_count)
-        if score <= 0:
+        if record_count <= 0:
             continue
-        totals[miner_hotkey] = totals.get(miner_hotkey, 0.0) + score
+        totals_by_hotkey[miner_hotkey] = totals_by_hotkey.get(miner_hotkey, 0) + record_count
 
-    return totals
+    if not totals_by_hotkey:
+        return {}
+
+    ranked = sorted(
+        totals_by_hotkey.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
+    scores_by_hotkey: dict[str, float] = {}
+    previous_count: int | None = None
+    rank = 0
+    for hotkey, total_count in ranked:
+        if previous_count is None or total_count < previous_count:
+            rank += 1
+            previous_count = total_count
+        scores_by_hotkey[hotkey] = 1.0 / float(2 ** (rank - 1))
+
+    return scores_by_hotkey
 
 
 @app.command("commit-credentials")
