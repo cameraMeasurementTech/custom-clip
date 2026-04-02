@@ -58,6 +58,38 @@ class _AlwaysMismatchChecker:
         return [f"caption_semantic_mismatch:{sampled[0].clip_id}"]
 
 
+class _RecordingSemanticChecker:
+    def __init__(self, events: list[str]):
+        self._events = events
+
+    def check(
+        self,
+        *,
+        sampled: list[ClipRecord],
+        frame_paths_by_clip_id: dict[str, list[Path]],
+    ) -> list[str]:
+        _ = sampled
+        _ = frame_paths_by_clip_id
+        self._events.append("semantic")
+        return []
+
+
+class _RecordingCategoryChecker:
+    def __init__(self, events: list[str]):
+        self._events = events
+
+    def check(
+        self,
+        *,
+        sampled: list[ClipRecord],
+        frame_paths_by_clip_id: dict[str, list[Path]],
+    ) -> list[str]:
+        _ = sampled
+        _ = frame_paths_by_clip_id
+        self._events.append("category")
+        return []
+
+
 def test_validator_e2e(tmp_path: Path) -> None:
     async def run() -> None:
         store = LocalObjectStore(tmp_path / "store")
@@ -220,6 +252,61 @@ def test_validator_rejects_semantic_caption_mismatch(tmp_path: Path) -> None:
     run_async(run())
 
 
+def test_validator_runs_category_stage_after_semantic(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = LocalObjectStore(tmp_path / "store")
+        hotkey = "miner1"
+        interval_id = 15
+        key_base = f"{interval_id}"
+        events: list[str] = []
+
+        clip_file = tmp_path / "clip.mp4"
+        frame_file = tmp_path / "frame.jpg"
+        clip_file.write_bytes(b"clip-data")
+        frame_file.write_bytes(b"frame-data")
+        records = [
+            _record(
+                "c1",
+                0.0,
+                clip_sha256=sha256_file(clip_file),
+                frame_sha256=sha256_file(frame_file),
+            )
+        ]
+        dataset = tmp_path / "dataset.parquet"
+        manifest = tmp_path / "manifest.json"
+        write_dataset_parquet(records, dataset)
+        write_manifest(
+            IntervalManifest(
+                netuid=1,
+                miner_hotkey=hotkey,
+                interval_id=interval_id,
+                record_count=len(records),
+                dataset_sha256=sha256_file(dataset),
+                category="nature_landscape_scenery",
+            ),
+            manifest,
+        )
+        await store.upload_file(f"{key_base}/dataset.parquet", dataset)
+        await store.upload_file(f"{key_base}/manifest.json", manifest)
+        await store.upload_file(f"{key_base}/{records[0].clip_uri}", clip_file)
+        await store.upload_file(f"{key_base}/{records[0].first_frame_uri}", frame_file)
+
+        pipeline = ValidatorPipeline(
+            store_for_hotkey=lambda _: store,
+            caption_semantic_checker=_RecordingSemanticChecker(events),
+            category_checker=_RecordingCategoryChecker(events),
+            expected_category="nature_landscape_scenery",
+        )
+        decisions, _weights = await pipeline.validate_interval(
+            candidate_hotkeys=[hotkey],
+            interval_id=interval_id,
+        )
+        assert decisions[0].accepted is True
+        assert events == ["semantic", "category"]
+
+    run_async(run())
+
+
 def test_validator_rejects_dataset_sha_mismatch(tmp_path: Path) -> None:
     async def run() -> None:
         store = LocalObjectStore(tmp_path / "store")
@@ -252,6 +339,58 @@ def test_validator_rejects_dataset_sha_mismatch(tmp_path: Path) -> None:
         assert len(decisions) == 1
         assert decisions[0].accepted is False
         assert "dataset_sha256_mismatch" in decisions[0].failures
+
+    run_async(run())
+
+
+def test_validator_rejects_missing_category_metadata_when_expected(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = LocalObjectStore(tmp_path / "store")
+        hotkey = "miner1"
+        interval_id = 12
+        key_base = f"{interval_id}"
+
+        clip_file = tmp_path / "clip.mp4"
+        frame_file = tmp_path / "frame.jpg"
+        clip_file.write_bytes(b"clip-data")
+        frame_file.write_bytes(b"frame-data")
+        row = _record(
+            "c1",
+            0.0,
+            clip_sha256=sha256_file(clip_file),
+            frame_sha256=sha256_file(frame_file),
+        )
+
+        dataset = tmp_path / "dataset.parquet"
+        manifest = tmp_path / "manifest.json"
+        write_dataset_parquet([row], dataset)
+        # Intentionally omit category metadata.
+        write_manifest(
+            IntervalManifest(
+                netuid=1,
+                miner_hotkey=hotkey,
+                interval_id=interval_id,
+                record_count=1,
+                dataset_sha256=sha256_file(dataset),
+            ),
+            manifest,
+        )
+        await store.upload_file(f"{key_base}/dataset.parquet", dataset)
+        await store.upload_file(f"{key_base}/manifest.json", manifest)
+        await store.upload_file(f"{key_base}/{row.clip_uri}", clip_file)
+        await store.upload_file(f"{key_base}/{row.first_frame_uri}", frame_file)
+
+        pipeline = ValidatorPipeline(
+            store_for_hotkey=lambda _: store,
+            expected_category="nature_landscape_scenery",
+        )
+        decisions, _weights = await pipeline.validate_interval(
+            candidate_hotkeys=[hotkey],
+            interval_id=interval_id,
+        )
+        assert len(decisions) == 1
+        assert decisions[0].accepted is False
+        assert "missing_category_metadata" in decisions[0].failures
 
     run_async(run())
 

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     workdir: Path = Field(default=Path(".nexis"), alias="NEXIS_WORKDIR")
     block_poll_sec: float = Field(default=6.0, alias="NEXIS_BLOCK_POLL_SEC")
     dataset_spec_default: str = Field(default="video_v1", alias="NEXIS_DATASET_SPEC_DEFAULT")
+    dataset_category: str = Field(default="nature_landscape_scenery", alias="NEXIS_DATASET_CATEGORY")
     miner_enabled_specs: str = Field(default="video_v1", alias="NEXIS_MINER_ENABLED_SPECS")
     validator_enabled_specs: str = Field(
         default="video_v1",
@@ -62,6 +63,22 @@ class Settings(BaseSettings):
     validator_semantic_max_samples: int = Field(
         default=8,
         alias="NEXIS_VALIDATOR_SEMANTIC_MAX_SAMPLES",
+    )
+    validator_category_check_enabled: bool = Field(
+        default=True,
+        alias="NEXIS_VALIDATOR_CATEGORY_CHECK_ENABLED",
+    )
+    validator_category_model: str = Field(
+        default="gpt-4o",
+        alias="NEXIS_VALIDATOR_CATEGORY_MODEL",
+    )
+    validator_category_timeout_sec: int = Field(
+        default=20,
+        alias="NEXIS_VALIDATOR_CATEGORY_TIMEOUT_SEC",
+    )
+    validator_category_max_samples: int = Field(
+        default=8,
+        alias="NEXIS_VALIDATOR_CATEGORY_MAX_SAMPLES",
     )
 
     owner_validator_hotkey: str = Field(

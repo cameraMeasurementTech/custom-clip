@@ -37,11 +37,13 @@ class MinerPipeline:
         captioner: Captioner,
         source_provider: SourceProvider | None = None,
         spec_id: str = DEFAULT_SPEC_ID,
+        dataset_category: str = "nature_landscape_scenery",
     ):
         self.store = store
         self.captioner = captioner
         self.source_provider = source_provider or YouTubeSourceProvider()
         self.spec_id = spec_id
+        self.dataset_category = dataset_category.strip()
 
     async def run_interval(
         self,
@@ -147,6 +149,7 @@ class MinerPipeline:
             schema_version=SCHEMA_VERSION,
             spec_id=self.spec_id,
             dataset_type=self.spec_id,
+            category=self.dataset_category or None,
             netuid=netuid,
             miner_hotkey=miner_hotkey,
             interval_id=interval_id,

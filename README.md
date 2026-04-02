@@ -111,7 +111,8 @@ Edit `.env` and fill required values before running commands.
 
 ### 1) Configure miner `.env`
 
-At minimum, set wallet, Cloudflare R2 credentials, and source file path.
+At minimum, set wallet, Cloudflare R2 credentials, source file path, and
+`NEXIS_DATASET_CATEGORY`.
 Shared buckets require explicit account IDs:
 `NEXIS_RECORD_INFO_ACCOUNT_ID` and `NEXIS_OWNER_DB_ACCOUNT_ID`.
 
@@ -250,10 +251,14 @@ if all required checks pass.
    - validates sampled clip resolution is exactly `1280x720`
 6. **Optional semantic caption check**
    - model checks whether caption matches sampled multi-frame visual context
-7. **Overlap pruning**
+7. **Category validation (nature/landscape/scenery)**
+   - requires manifest category metadata
+   - caption-only gate
+   - strict vision check on middle timeline frames for borderline captions
+8. **Overlap pruning**
    - rows already seen in global index are pruned
    - cross-miner same-source overlaps are arbitrated by earliest manifest time
-8. **Decision + scoring**
+9. **Decision + scoring**
    - emits per-miner accept/reject decision with failure reasons
    - API maintains invalid-hotkey windows (`interval_id-500` to `interval_id`)
    - validator zeros API-invalid hotkeys before submitting chain weights
@@ -299,6 +304,7 @@ Manifest includes:
 
 - `protocol_version`, `schema_version`
 - `spec_id` / `dataset_type`
+- `category` (for category-aware validator checks)
 - `netuid`, `miner_hotkey`, `interval_id`
 - `created_at`
 - `record_count`

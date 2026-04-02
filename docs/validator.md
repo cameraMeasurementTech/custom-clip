@@ -54,13 +54,18 @@ docker inspect --format '{{index .RepoDigests 0}}' nexis-validator
 ### Recommended
 
 - `NEXIS_LOG_LEVEL`
+- `NEXIS_DATASET_CATEGORY` (default `nature_landscape_scenery`)
 - `NEXIS_VALIDATOR_ENABLED_SPECS` (default `video_v1`)
 - `NEXIS_VALIDATOR_SEMANTIC_CHECK_ENABLED` (default `true`)
 - `NEXIS_VALIDATOR_SEMANTIC_MODEL`
 - `NEXIS_VALIDATOR_SEMANTIC_TIMEOUT_SEC`
 - `NEXIS_VALIDATOR_SEMANTIC_MAX_SAMPLES`
+- `NEXIS_VALIDATOR_CATEGORY_CHECK_ENABLED` (default `true`)
+- `NEXIS_VALIDATOR_CATEGORY_MODEL`
+- `NEXIS_VALIDATOR_CATEGORY_TIMEOUT_SEC`
+- `NEXIS_VALIDATOR_CATEGORY_MAX_SAMPLES`
 - `OPENAI_API_KEY` (preferred; uses `gpt-4o`)
-- `GEMINI_API_KEY` (optional fallback; uses `gemini-3.1-flash-lite-preview` when OpenAI key is unset)
+- `GEMINI_API_KEY` (optional fallback for category checks; uses `gemini-3.1-flash-lite-preview` when OpenAI key is unset)
 - `NEXIS_VALIDATION_API_URL` (optional evidence API endpoint)
 - `NEXIS_VALIDATION_API_TIMEOUT_SEC`
 
@@ -86,6 +91,10 @@ docker inspect --format '{{index .RepoDigests 0}}' nexis-validator
 - verifies sampled clip/frame assets against row SHA256 fields
 - enforces sampled clip resolution (`1280x720`)
 - runs optional semantic caption-vs-multi-frame checks on sampled rows
+- runs optional category validation (nature/landscape/scenery):
+  - caption gate first
+  - strict middle-3 frame check for borderline cases
+  - rejects when manifest category metadata is missing or unsupported
 - prunes row-level overlaps using shared `nexis-record-info` index
 - arbitrates same-interval cross-miner overlaps via earliest manifest `created_at`
 - fetches invalid hotkeys from API for `[interval_id-500, interval_id]`
@@ -100,6 +109,28 @@ docker inspect --format '{{index .RepoDigests 0}}' nexis-validator
 - anti-bot/download errors are fail-open (miner treated as valid for source-auth stage)
 
 The blacklist file is always applied. Stop with `Ctrl+C`.
+
+## Category Failure Codes
+
+When `NEXIS_VALIDATOR_CATEGORY_CHECK_ENABLED=true`, category-related failures can appear in
+validator decision payloads:
+
+- `missing_category_metadata`
+  - manifest does not include `category`
+- `unsupported_category:<value>`
+  - manifest category is present but not currently supported by validator category logic
+- `category_caption_reject:<clip_id>`
+  - caption-gate stage rejects sampled clip category before strict vision pass
+- `category_strict_reject:<clip_id>`
+  - strict middle-frame vision evaluation rejects sampled clip category
+- `category_strict_frames_missing:<clip_id>`
+  - strict stage could not build the required middle-frame set from available semantic frames
+- `category_strict_api_key_missing:<clip_id>`
+  - strict stage had no usable API key configured for category checks
+- `category_strict_client_unavailable:<clip_id>`
+  - Gemini OpenAI-compatible client could not be initialized
+- `category_strict_response_invalid:<clip_id>`
+  - strict stage response was malformed/unparseable or missing required fields
 
 ## Local (Non-Docker) Commands
 
@@ -131,6 +162,8 @@ nexis sync-owner-datasets --poll-sec 60
   - validator semantic checks use OpenAI (`gpt-4o`) when `OPENAI_API_KEY` is set
   - if OpenAI is unset but `GEMINI_API_KEY` is set, checks use Gemini (`gemini-3.1-flash-lite-preview`)
   - if neither key is set, disable semantic checks with `NEXIS_VALIDATOR_SEMANTIC_CHECK_ENABLED=false`
+  - category checks follow the same provider preference:
+    OpenAI first, then Gemini fallback
 - Weight submission retries:
   - inspect validator logs for `set_weights failed`
   - confirm wallet hotkey/key material and chain access (`BT_NETWORK`)

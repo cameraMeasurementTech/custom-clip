@@ -15,6 +15,7 @@ def test_manifest_defaults_to_video_v1_spec_metadata() -> None:
     )
     assert manifest.spec_id == "video_v1"
     assert manifest.dataset_type == "video_v1"
+    assert manifest.category is None
 
 
 def test_manifest_backfills_spec_id_from_legacy_dataset_type() -> None:
@@ -34,3 +35,16 @@ def test_manifest_backfills_spec_id_from_legacy_dataset_type() -> None:
     encoded = json.loads(manifest.model_dump_json())
     assert encoded["spec_id"] == "video_v1"
     assert encoded["dataset_type"] == "video_v1"
+
+
+def test_manifest_preserves_category_metadata() -> None:
+    manifest = IntervalManifest(
+        netuid=1,
+        miner_hotkey="miner1",
+        interval_id=7,
+        record_count=1,
+        dataset_sha256="c" * 64,
+        category="nature_landscape_scenery",
+    )
+    encoded = json.loads(manifest.model_dump_json())
+    assert encoded["category"] == "nature_landscape_scenery"

@@ -13,6 +13,7 @@
 - `R2_WRITE_SECRET_KEY`
 - `NEXIS_SOURCES_FILE`
 - `NEXIS_BLOCK_POLL_SEC` (optional, default: `6`)
+- `NEXIS_DATASET_CATEGORY` (default: `nature_landscape_scenery`)
 - `TARGET_RESOLUTION` (optional, default: `720`)
 - `NEXIS_DATASET_SPEC_DEFAULT` (optional, default: `video_v1`)
 - `NEXIS_MINER_ENABLED_SPECS` (optional, CSV, default: `video_v1`)
@@ -40,6 +41,7 @@ nexis mine --spec video_v1
 
 `nexis mine` runs continuously. Every new 50-block interval, the miner
 builds and uploads one interval package keyed by interval start block.
+The manifest includes `category` metadata from `NEXIS_DATASET_CATEGORY`.
 Captions are generated from timeline-sampled clip frames (default: 12 frames).
 Stop with `Ctrl+C`.
 

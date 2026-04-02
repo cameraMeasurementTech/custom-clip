@@ -62,12 +62,23 @@ class CaptionSemanticCheckerLike(Protocol):
     ) -> list[str]: ...
 
 
+class CategoryCheckerLike(Protocol):
+    def check(
+        self,
+        *,
+        sampled: list[ClipRecord],
+        frame_paths_by_clip_id: dict[str, list[Path]],
+    ) -> list[str]: ...
+
+
 class ValidatorPipeline:
     def __init__(
         self,
         store_for_hotkey: Callable[[str], Any],
         weight_computer: WeightComputer | None = None,
         caption_semantic_checker: CaptionSemanticCheckerLike | None = None,
+        category_checker: CategoryCheckerLike | None = None,
+        expected_category: str | None = None,
         source_authenticity_enabled: bool = False,
         source_auth_only: bool = False,
         spec_registry: DatasetSpecRegistry | None = None,
@@ -76,6 +87,8 @@ class ValidatorPipeline:
         self._store_for_hotkey = store_for_hotkey
         self.weight_computer = weight_computer or WeightComputer()
         self._caption_semantic_checker = caption_semantic_checker
+        self._category_checker = category_checker
+        self._expected_category = (expected_category or "").strip() or None
         self._source_authenticity_enabled = source_authenticity_enabled
         self._source_auth_only = source_auth_only
         self._spec_registry = spec_registry or DatasetSpecRegistry.with_defaults()
@@ -341,6 +354,36 @@ class ValidatorPipeline:
                     failures=[f"spec_not_enabled:{manifest.spec_id}"],
                     sampled_rows=0,
                 )
+            if self._expected_category is not None:
+                manifest_category = (manifest.category or "").strip()
+                if not manifest_category:
+                    logger.warning(
+                        "manifest category metadata missing hotkey=%s interval=%d",
+                        hotkey,
+                        interval_id,
+                    )
+                    return None, ValidationDecision(
+                        miner_hotkey=hotkey,
+                        interval_id=interval_id,
+                        accepted=False,
+                        failures=["missing_category_metadata"],
+                        sampled_rows=0,
+                    )
+                if manifest_category != self._expected_category:
+                    logger.warning(
+                        "manifest category unsupported hotkey=%s interval=%d category=%s expected=%s",
+                        hotkey,
+                        interval_id,
+                        manifest_category,
+                        self._expected_category,
+                    )
+                    return None, ValidationDecision(
+                        miner_hotkey=hotkey,
+                        interval_id=interval_id,
+                        accepted=False,
+                        failures=[f"unsupported_category:{manifest_category}"],
+                        sampled_rows=0,
+                    )
             spec = self._spec_registry.get(manifest.spec_id)
             actual_dataset_sha256 = sha256_file(dataset_local)
             if manifest.dataset_sha256 != actual_dataset_sha256:
@@ -503,6 +546,12 @@ class ValidatorPipeline:
                         loaded.interval_id,
                         len(semantic_failures),
                     )
+            if self._category_checker is not None and not self._source_auth_only:
+                category_failures = self._category_checker.check(
+                    sampled=sampled,
+                    frame_paths_by_clip_id=semantic_frames,
+                )
+                check_result.failures.extend(category_failures)
 
             accepted = len(check_result.failures) == 0
             return ValidationDecision(
@@ -518,6 +567,7 @@ class ValidatorPipeline:
                     "global_overlap_pruned_count": global_pruned_count,
                     "cross_miner_overlap_pruned_count": cross_miner_pruned_count,
                     "spec_id": loaded.spec_id,
+                    "category": loaded.manifest.category,
                 },
             )
         except Exception as exc:

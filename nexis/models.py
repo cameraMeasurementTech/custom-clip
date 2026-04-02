@@ -52,6 +52,7 @@ class IntervalManifest(BaseModel):
     schema_version: str = Field(default=SCHEMA_VERSION)
     spec_id: str = Field(default=_DEFAULT_SPEC_ID, min_length=1)
     dataset_type: str = Field(default=_DEFAULT_SPEC_ID, min_length=1)
+    category: str | None = None
     netuid: int = Field(ge=0)
     miner_hotkey: str = Field(min_length=1)
     interval_id: int = Field(ge=0)
@@ -72,6 +73,10 @@ class IntervalManifest(BaseModel):
         resolved = spec_id or dataset_type or _DEFAULT_SPEC_ID
         data["spec_id"] = resolved
         data["dataset_type"] = resolved
+        category = data.get("category")
+        if isinstance(category, str):
+            category_text = category.strip()
+            data["category"] = category_text or None
         return data
 
 

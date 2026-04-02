@@ -38,6 +38,7 @@ from .protocol import (
 from .specs import DEFAULT_SPEC_ID, DatasetSpecRegistry
 from .storage.r2 import R2Credentials, R2S3Store, bucket_name_for_hotkey
 from .validator.caption_semantic import CaptionSemanticChecker
+from .validator.category_check import NatureCategoryChecker
 from .validator.owner_sync import (
     merge_records_into_index as owner_merge_records_into_index,
     parse_record_info as owner_parse_record_info,
@@ -61,6 +62,7 @@ _WEIGHT_RETRY_BACKOFF_MAX_SEC = 300
 _OPENAI_PRIMARY_MODEL = "gpt-4o"
 _GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite-preview"
 _GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+_SUPPORTED_CATEGORY = "nature_landscape_scenery"
 
 
 def _configure_logging(level: str, *, debug: bool = False) -> None:
@@ -539,6 +541,9 @@ def mine(
     spec_registry = DatasetSpecRegistry.with_defaults()
     enabled_specs = _resolve_enabled_specs(settings.miner_enabled_specs, spec_registry)
     active_spec = spec.strip() or settings.dataset_spec_default.strip() or DEFAULT_SPEC_ID
+    active_category = settings.dataset_category.strip()
+    if not active_category:
+        raise typer.BadParameter("NEXIS_DATASET_CATEGORY must not be empty")
     if active_spec not in enabled_specs:
         raise typer.BadParameter(
             f"Spec '{active_spec}' is not enabled for miner (enabled: {', '.join(enabled_specs)})"
@@ -586,6 +591,7 @@ def mine(
         store=store,
         captioner=captioner,
         spec_id=active_spec,
+        dataset_category=active_category,
     )
     try:
         asyncio.run(
@@ -716,6 +722,14 @@ def validate(
         specs.strip() or settings.validator_enabled_specs,
         spec_registry,
     )
+    expected_category = settings.dataset_category.strip()
+    if not expected_category:
+        raise typer.BadParameter("NEXIS_DATASET_CATEGORY must not be empty")
+    if settings.validator_category_check_enabled and expected_category != _SUPPORTED_CATEGORY:
+        raise typer.BadParameter(
+            f"Unsupported NEXIS_DATASET_CATEGORY '{expected_category}'. "
+            f"Current validator category checks support only '{_SUPPORTED_CATEGORY}'."
+        )
     poll_seconds = settings.block_poll_sec if poll_sec is None else poll_sec
     validator_hotkey = _resolve_hotkey_ss58_from_wallet(settings)
     _configure_logging("INFO", debug=debug)
@@ -772,6 +786,34 @@ def validate(
         provider=semantic_provider,
         base_url=semantic_base_url,
     )
+    (
+        category_provider,
+        category_api_key,
+        category_model,
+        category_base_url,
+        category_route,
+    ) = _resolve_llm_runtime(
+        settings,
+        openai_model=settings.validator_category_model,
+    )
+    logger.info(
+        "validator category runtime provider=%s model=%s route=%s",
+        category_provider,
+        category_model,
+        category_route,
+    )
+    if settings.validator_category_check_enabled and category_route == "no_api_key":
+        raise typer.BadParameter(
+            "NEXIS_VALIDATOR_CATEGORY_CHECK_ENABLED=true requires OPENAI_API_KEY or GEMINI_API_KEY"
+        )
+    category_checker = NatureCategoryChecker(
+        enabled=settings.validator_category_check_enabled,
+        api_key=category_api_key,
+        timeout_sec=settings.validator_category_timeout_sec,
+        max_samples=settings.validator_category_max_samples,
+        base_url=category_base_url,
+        model=category_model,
+    )
     record_info_read_store: R2S3Store | None = None
     record_info_read_creds = _build_shared_bucket_credentials(
         settings=settings,
@@ -810,6 +852,8 @@ def validate(
     validator = ValidatorPipeline(
         store_for_hotkey=store_for_hotkey,
         caption_semantic_checker=semantic_checker,
+        category_checker=category_checker,
+        expected_category=expected_category,
         source_authenticity_enabled=False,
         spec_registry=spec_registry,
         enabled_specs=enabled_specs,
@@ -896,6 +940,9 @@ def validate_source_auth(
         specs.strip() or settings.validator_enabled_specs,
         spec_registry,
     )
+    expected_category = settings.dataset_category.strip()
+    if not expected_category:
+        raise typer.BadParameter("NEXIS_DATASET_CATEGORY must not be empty")
     poll_seconds = settings.block_poll_sec if poll_sec is None else poll_sec
     validator_hotkey = _resolve_hotkey_ss58_from_wallet(settings)
     _configure_logging("INFO", debug=debug)
@@ -941,6 +988,7 @@ def validate_source_auth(
     validator = ValidatorPipeline(
         store_for_hotkey=store_for_hotkey,
         caption_semantic_checker=None,
+        expected_category=expected_category,
         source_authenticity_enabled=True,
         source_auth_only=True,
         spec_registry=spec_registry,
