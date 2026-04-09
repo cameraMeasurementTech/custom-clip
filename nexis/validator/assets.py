@@ -107,6 +107,115 @@ class VideoAssetVerifier:
             first_frames_by_clip_id=first_frames_by_clip_id,
         )
 
+    def verify_local_workdir(
+        self,
+        *,
+        workdir: Path,
+        sampled: list[ClipRecord],
+        miner_dir: Path,
+    ) -> AssetVerificationResult:
+        """Same checks as ``verify`` but read clip/frame files from ``workdir`` (miner pre-upload preflight)."""
+        failures: list[str] = []
+        semantic_frames_by_clip_id: dict[str, list[Path]] = {}
+        first_frames_by_clip_id: dict[str, Path] = {}
+        root = workdir.expanduser().resolve()
+        for row in sampled:
+            clip_path, clip_ok = self._local_media_path_and_ok(
+                root,
+                row.clip_uri,
+                row.clip_sha256,
+                missing_code=f"missing_clip_asset:{row.clip_id}",
+                mismatch_code=f"clip_sha256_mismatch:{row.clip_id}",
+                failures=failures,
+            )
+            if clip_ok:
+                resolution_failure = self._verify_resolution(row=row, clip_path=clip_path)
+                if resolution_failure is not None:
+                    failures.append(resolution_failure)
+
+            frame_path, frame_ok = self._local_media_path_and_ok(
+                root,
+                row.first_frame_uri,
+                row.first_frame_sha256,
+                missing_code=f"missing_first_frame_asset:{row.clip_id}",
+                mismatch_code=f"first_frame_sha256_mismatch:{row.clip_id}",
+                failures=failures,
+            )
+            if frame_ok:
+                first_frames_by_clip_id[row.clip_id] = frame_path
+
+            if clip_ok:
+                clip_frames = extract_caption_frames(
+                    clip_path,
+                    miner_dir / "semantic" / row.clip_id,
+                    frame_count=_SEMANTIC_FRAME_COUNT,
+                )
+                if frame_ok:
+                    if not clip_frames:
+                        clip_frames = [frame_path]
+                    while len(clip_frames) < _SEMANTIC_FRAME_COUNT:
+                        clip_frames.append(frame_path)
+                    clip_frames.append(frame_path)
+                semantic_frames_by_clip_id[row.clip_id] = [
+                    frame for frame in clip_frames if frame.exists()
+                ]
+        return AssetVerificationResult(
+            failures=failures,
+            semantic_frames_by_clip_id=semantic_frames_by_clip_id,
+            first_frames_by_clip_id=first_frames_by_clip_id,
+        )
+
+    def _local_media_path_and_ok(
+        self,
+        root: Path,
+        relative_uri: str,
+        expected_sha256: str,
+        *,
+        missing_code: str,
+        mismatch_code: str,
+        failures: list[str],
+    ) -> tuple[Path, bool]:
+        safe = self._normalize_relative_uri(relative_uri)
+        if safe is None:
+            failures.append(f"invalid_asset_uri:{relative_uri}")
+            return root / "__invalid__", False
+        path = (root / safe).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            failures.append(f"invalid_asset_uri:{relative_uri}")
+            return path, False
+        err = self._verify_local_asset_file(
+            path=path,
+            root=root,
+            expected_sha256=expected_sha256,
+            missing_code=missing_code,
+            mismatch_code=mismatch_code,
+        )
+        if err:
+            failures.append(err)
+            return path, False
+        return path, True
+
+    def _verify_local_asset_file(
+        self,
+        *,
+        path: Path,
+        root: Path,
+        expected_sha256: str,
+        missing_code: str,
+        mismatch_code: str,
+    ) -> str | None:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            return missing_code
+        if not path.is_file():
+            return missing_code
+        if sha256_file(path) != expected_sha256:
+            return mismatch_code
+        return None
+
     def _verify_resolution(self, *, row: ClipRecord, clip_path: Path) -> str | None:
         width = row.width
         height = row.height

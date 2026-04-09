@@ -26,8 +26,20 @@ from .chain.metagraph import (
 )
 from .chain.weights import submit_weights_to_chain_async
 from .config import Settings, load_settings
-from .miner.captioner import Captioner
+from .miner.captioner import Captioner, merge_openai_api_keys
+from .miner.llm_runtime import resolve_llm_runtime as _resolve_llm_runtime
+from .miner.prepare_runner import run_mine_prepare
+from .miner.pending_pack import (
+    PendingSaveValidatorConfig,
+    delete_local_assets_for_records,
+    delete_local_out_interval,
+    load_last_pack_block,
+    pack_deduped_pending_and_upload,
+    save_last_pack_block,
+)
+from .miner.preflight import build_preflight_llm_checkers
 from .miner.pipeline import MinerPipeline
+from .miner.upload_runner import run_mine_upload
 from .models import ClipRecord
 from .models import ValidationDecision
 from .protocol import (
@@ -59,9 +71,6 @@ console = Console()
 logger = logging.getLogger(__name__)
 _WEIGHT_RETRY_BACKOFF_BASE_SEC = 10
 _WEIGHT_RETRY_BACKOFF_MAX_SEC = 300
-_OPENAI_PRIMARY_MODEL = "gpt-4o"
-_GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite-preview"
-_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 _SUPPORTED_CATEGORY = "nature_landscape_scenery"
 
 
@@ -328,44 +337,6 @@ def _weight_retry_backoff_sec(failure_count: int) -> int:
     return min(_WEIGHT_RETRY_BACKOFF_MAX_SEC, _WEIGHT_RETRY_BACKOFF_BASE_SEC * (2**exponent))
 
 
-def _resolve_llm_runtime(
-    settings: Settings,
-    *,
-    openai_model: str,
-) -> tuple[str, str, str, str | None, str]:
-    resolved_openai_model = openai_model.strip()
-    # Auto-upgrade legacy default to requested OpenAI model.
-    if not resolved_openai_model or resolved_openai_model == "gpt-4o-mini":
-        resolved_openai_model = _OPENAI_PRIMARY_MODEL
-    openai_api_key = settings.openai_api_key.strip()
-    gemini_api_key = settings.gemini_api_key.strip()
-    if openai_api_key and gemini_api_key:
-        logger.info("both OPENAI_API_KEY and GEMINI_API_KEY are set; preferring OpenAI")
-    if openai_api_key:
-        return (
-            "openai",
-            openai_api_key,
-            resolved_openai_model,
-            None,
-            "openai_key",
-        )
-    if gemini_api_key:
-        return (
-            "gemini",
-            gemini_api_key,
-            _GEMINI_PRIMARY_MODEL,
-            _GEMINI_OPENAI_BASE_URL,
-            "gemini_key",
-        )
-    return (
-        "openai",
-        "",
-        resolved_openai_model,
-        None,
-        "no_api_key",
-    )
-
-
 async def _fetch_hotkeys_with_commitments(
     *,
     settings: Settings,
@@ -594,20 +565,62 @@ def mine(
     )
     if caption_route == "no_api_key":
         logger.warning(
-            "miner caption key missing; fallback captions will be used until OPENAI_API_KEY or GEMINI_API_KEY is set"
+            "miner caption key missing; set OPENAI_API_KEY and/or NEXIS_OPENAI_API_KEYS, or GEMINI_API_KEY "
+            "(fallback captions until then)"
         )
+    caption_key_list = (
+        merge_openai_api_keys(settings.openai_api_key, settings.openai_api_keys_extra)
+        if caption_provider == "openai"
+        else ([caption_api_key] if caption_api_key.strip() else [])
+    )
+    rpm = settings.caption_openai_rpm_per_key if caption_provider == "openai" else 0
+    if caption_provider == "openai" and caption_key_list:
+        if rpm > 0:
+            est = rpm * len(caption_key_list)
+            logger.info(
+                "miner caption: %d OpenAI key(s), NEXIS_CAPTION_OPENAI_RPM_PER_KEY=%d "
+                "(~%d requests/minute aggregate with separate per-key limits; 429 rotates key then backoff)",
+                len(caption_key_list),
+                rpm,
+                est,
+            )
+        elif len(caption_key_list) > 1:
+            logger.info(
+                "miner caption using %d OpenAI API keys (set NEXIS_CAPTION_OPENAI_RPM_PER_KEY>0 to space per key)",
+                len(caption_key_list),
+            )
     captioner = Captioner(
-        api_key=caption_api_key,
+        api_keys=caption_key_list,
         model=caption_model,
         timeout_sec=settings.caption_timeout_sec,
         provider=caption_provider,
         base_url=caption_base_url,
+        rate_limit_max_attempts=settings.caption_rate_limit_max_attempts,
+        rate_limit_max_sleep_sec=settings.caption_rate_limit_max_sleep_sec,
+        openai_rpm_per_key=rpm,
     )
+    pending_save = None
+    if settings.miner_prepare_validate_before_save:
+        sem_chk = None
+        cat_chk = None
+        if settings.miner_preflight_semantic or settings.miner_preflight_category:
+            sem_chk, cat_chk = build_preflight_llm_checkers(settings)
+        pending_save = PendingSaveValidatorConfig(
+            enabled=True,
+            spec_id=active_spec,
+            registry=spec_registry,
+            miner_hotkey=hotkey_ss58,
+            prepare_sample_interval_id=0,
+            run_local_asset_verify=settings.miner_prepare_asset_verify,
+            caption_semantic_checker=sem_chk,
+            category_checker=cat_chk,
+        )
     pipeline = MinerPipeline(  # type: ignore[arg-type]
         store=store,
         captioner=captioner,
         spec_id=active_spec,
         dataset_category=active_category,
+        pending_save=pending_save,
     )
     try:
         asyncio.run(
@@ -624,6 +637,152 @@ def mine(
         console.print("miner loop stopped")
 
 
+@app.command("mine-prepare")
+def mine_prepare(
+    workdir: Path = typer.Option(
+        ...,
+        "--workdir",
+        help="Shared output directory (clips/, frames/, miner_pending_records.jsonl).",
+        file_okay=False,
+    ),
+    sources: Path = typer.Option(
+        ...,
+        "--sources",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="URL queue file; first line is popped atomically per new video (POSIX lock).",
+    ),
+    workers: int = typer.Option(1, "--workers", help="Parallel prepare threads.", min=1),
+    thread_keys_file: Path | None = typer.Option(
+        None,
+        "--thread-keys-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="One line per worker: comma-separated OpenAI keys (required when --workers > 1).",
+    ),
+    max_segments_per_worker: int = typer.Option(
+        0,
+        "--max-segments-per-worker",
+        help="Stop each worker after N clips (0 = until queue empty).",
+    ),
+    rpm_per_key: int | None = typer.Option(
+        None,
+        "--rpm-per-key",
+        help="Override NEXIS_CAPTION_OPENAI_RPM_PER_KEY (0 disables spacing).",
+    ),
+    spec: str = typer.Option(
+        "",
+        "--spec",
+        help="Dataset spec ID (defaults to NEXIS_DATASET_SPEC_DEFAULT).",
+    ),
+    debug: bool = typer.Option(False, "--debug", help="Verbose logging."),
+) -> None:
+    """Pop URLs from a shared file, download, clip, caption into --workdir (no R2 upload)."""
+    settings = load_settings()
+    spec_registry = DatasetSpecRegistry.with_defaults()
+    enabled_specs = _resolve_enabled_specs(settings.miner_enabled_specs, spec_registry)
+    active_spec = spec.strip() or settings.dataset_spec_default.strip() or DEFAULT_SPEC_ID
+    active_category = settings.dataset_category.strip()
+    if not active_category:
+        raise typer.BadParameter("NEXIS_DATASET_CATEGORY must not be empty")
+    if active_spec not in enabled_specs:
+        raise typer.BadParameter(
+            f"Spec '{active_spec}' is not enabled for miner (enabled: {', '.join(enabled_specs)})"
+        )
+    if active_spec not in spec_registry.list_spec_ids():
+        raise typer.BadParameter(f"Unknown dataset spec: {active_spec}")
+    _configure_logging("INFO", debug=debug)
+
+    console.print(
+        f"mine-prepare: workers={workers} workdir={workdir} sources={sources.expanduser().resolve()} "
+        f"(URLs are removed from the file as claimed)"
+    )
+    try:
+        run_mine_prepare(
+            settings=settings,
+            workdir=workdir,
+            sources_path=sources,
+            workers=workers,
+            thread_keys_file=thread_keys_file,
+            max_segments_per_worker=max_segments_per_worker,
+            rpm_per_key=rpm_per_key,
+            active_spec=active_spec,
+            active_category=active_category,
+            spec_registry=spec_registry,
+            spec_registry_enabled_ids=set(enabled_specs),
+            spec_registry_all_ids=set(spec_registry.list_spec_ids()),
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print("mine-prepare: all workers finished")
+
+
+@app.command("mine-upload")
+def mine_upload(
+    workdir: Path = typer.Option(
+        ...,
+        "--workdir",
+        file_okay=False,
+        help="Directory with clips/, frames/, miner_pending_records.jsonl.",
+    ),
+    interval_id: int = typer.Option(
+        ...,
+        "--interval-id",
+        help="Chain interval start block for this R2 prefix.",
+    ),
+    delete_local: bool = typer.Option(
+        True,
+        "--delete-local/--keep-local",
+        help="After successful upload, remove uploaded clips/frames and out/{interval_id}/.",
+    ),
+    spec: str = typer.Option(
+        "",
+        "--spec",
+        help="Dataset spec ID (defaults to NEXIS_DATASET_SPEC_DEFAULT).",
+    ),
+    debug: bool = typer.Option(False, "--debug", help="Verbose logging."),
+) -> None:
+    """Upload pending clips (deduped) to R2 for one interval; optionally delete local assets."""
+    settings = load_settings()
+    spec_registry = DatasetSpecRegistry.with_defaults()
+    enabled_specs = _resolve_enabled_specs(settings.miner_enabled_specs, spec_registry)
+    active_spec = spec.strip() or settings.dataset_spec_default.strip() or DEFAULT_SPEC_ID
+    active_category = settings.dataset_category.strip()
+    if not active_category:
+        raise typer.BadParameter("NEXIS_DATASET_CATEGORY must not be empty")
+    if active_spec not in enabled_specs:
+        raise typer.BadParameter(
+            f"Spec '{active_spec}' is not enabled for miner (enabled: {', '.join(enabled_specs)})"
+        )
+    hotkey_ss58 = _resolve_hotkey_ss58_from_wallet(settings)
+    _configure_logging("INFO", debug=debug)
+    creds = _build_remote_credentials(settings, hotkey=hotkey_ss58)
+    creds.validate_account_id()
+    creds.validate_read_key_lengths()
+    creds.validate_bucket_name()
+    creds.validate_bucket_for_hotkey(hotkey_ss58)
+    store = R2S3Store(creds)
+    wd = workdir.expanduser().resolve()
+    try:
+        run_mine_upload(
+            settings=settings,
+            store=store,
+            workdir=wd,
+            interval_id=interval_id,
+            active_spec=active_spec,
+            active_category=active_category,
+            spec_registry_enabled_ids=set(enabled_specs),
+            spec_registry_all_ids=set(spec_registry.list_spec_ids()),
+            delete_local=delete_local,
+            miner_hotkey=hotkey_ss58,
+            emit=lambda msg: console.print(msg),
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 async def _run_miner_loop(
     *,
     settings: Settings,
@@ -633,17 +792,42 @@ async def _run_miner_loop(
     poll_seconds: float,
     active_spec: str,
 ) -> None:
+    spec_registry = DatasetSpecRegistry.with_defaults()
+    preflight_semantic_checker = None
+    preflight_category_checker = None
+    if settings.miner_preflight_before_upload and (
+        settings.miner_preflight_semantic or settings.miner_preflight_category
+    ):
+        preflight_semantic_checker, preflight_category_checker = build_preflight_llm_checkers(settings)
+    workdir = settings.workdir.expanduser()
+    continuous = settings.miner_continuous_pack_mode
+    cadence = settings.miner_upload_cadence_blocks
+    if continuous:
+        console.print(
+            f"miner loop (continuous): upload cadence={cadence} blocks, "
+            f"chain interval alignment={INTERVAL_LENGTH_BLOCKS}, poll={poll_seconds:.1f}s"
+        )
+        logger.info(
+            "miner loop continuous hotkey=%s cadence_blocks=%d chain_interval=%d poll_sec=%.1f spec=%s",
+            hotkey_ss58,
+            cadence,
+            INTERVAL_LENGTH_BLOCKS,
+            poll_seconds,
+            active_spec,
+        )
+    else:
+        console.print(
+            f"miner loop (legacy): interval={INTERVAL_LENGTH_BLOCKS} blocks, poll={poll_seconds:.1f}s"
+        )
+        logger.info(
+            "miner loop legacy hotkey=%s interval_blocks=%d poll_sec=%.1f spec=%s",
+            hotkey_ss58,
+            INTERVAL_LENGTH_BLOCKS,
+            poll_seconds,
+            active_spec,
+        )
+
     last_mined_interval_start: int | None = None
-    console.print(
-        f"miner loop started: interval={INTERVAL_LENGTH_BLOCKS} blocks, poll={poll_seconds:.1f}s"
-    )
-    logger.info(
-        "miner loop initialized hotkey=%s interval_blocks=%d poll_sec=%.1f spec=%s",
-        hotkey_ss58,
-        INTERVAL_LENGTH_BLOCKS,
-        poll_seconds,
-        active_spec,
-    )
     async with _open_subtensor(settings.bt_network) as subtensor:
         while True:
             try:
@@ -651,50 +835,100 @@ async def _run_miner_loop(
                     network=settings.bt_network,
                     subtensor=subtensor,
                 )
-                next_interval_start = (
-                    _initial_miner_interval_start(current_block)
-                    if last_mined_interval_start is None
-                    else last_mined_interval_start + INTERVAL_LENGTH_BLOCKS
-                )
-                logger.debug(
-                    "miner tick current_block=%d next_interval_start=%d last_mined=%s",
-                    current_block,
-                    next_interval_start,
-                    str(last_mined_interval_start),
-                )
+                if continuous:
+                    try:
+                        pipeline.mine_one_segment(workdir, settings.sources_file)
+                    except Exception:
+                        logger.exception("mine_one_segment failed")
 
-                while next_interval_start <= _current_interval_start(current_block):
-                    manifest_key = f"{next_interval_start}/manifest.json"
-                    already_uploaded = await store.object_exists(manifest_key)
-                    if already_uploaded:
-                        logger.info(
-                            "skip mining interval=%s reason=already_uploaded",
-                            _interval_label(next_interval_start),
-                        )
-                        console.print(
-                            f"skip interval {_interval_label(next_interval_start)}: already uploaded"
-                        )
-                    else:
-                        logger.info("starting mining interval=%s", _interval_label(next_interval_start))
-                        dataset_path, manifest_path = await pipeline.run_interval(
-                            sources_file=settings.sources_file,
+                    last_pack = load_last_pack_block(workdir)
+                    due = last_pack is None or current_block >= last_pack + cadence
+                    if due:
+                        target_interval = _current_interval_start(current_block)
+
+                        async def _refresh_pack_interval() -> int:
+                            b = await fetch_current_block_async(
+                                network=settings.bt_network,
+                                subtensor=subtensor,
+                            )
+                            return _current_interval_start(b)
+
+                        packed = await pack_deduped_pending_and_upload(
+                            store=store,
+                            workdir=workdir,
+                            interval_id=target_interval,
                             netuid=settings.netuid,
                             miner_hotkey=hotkey_ss58,
-                            interval_id=next_interval_start,
-                            workdir=settings.workdir,
+                            spec_id=active_spec,
+                            category=pipeline.dataset_category or None,
+                            r2_prune_old_prefix=settings.miner_r2_prune_old_prefix,
+                            r2_prune_uploads_ago=settings.miner_r2_prune_uploads_ago,
+                            manifest_busy_wait_sec=settings.miner_upload_manifest_busy_wait_sec,
+                            interval_refresher=_refresh_pack_interval,
+                            preflight_before_upload=settings.miner_preflight_before_upload,
+                            preflight_semantic_checker=preflight_semantic_checker,
+                            preflight_category_checker=preflight_category_checker,
+                            spec_registry=spec_registry,
                         )
+                        dataset_path, manifest_path, uploaded_rows, used_interval = packed
                         console.print(
-                            f"mined interval {_interval_label(next_interval_start)} "
-                            f"dataset={dataset_path} manifest={manifest_path}"
+                            f"packed interval {_interval_label(used_interval)} "
+                            f"dataset={dataset_path} manifest={manifest_path} "
+                            f"records={len(uploaded_rows)}"
                         )
                         logger.info(
-                            "completed mining interval=%s dataset=%s manifest=%s",
-                            _interval_label(next_interval_start),
+                            "completed pack interval=%s dataset=%s manifest=%s records=%d",
+                            _interval_label(used_interval),
                             dataset_path,
                             manifest_path,
+                            len(uploaded_rows),
                         )
-                    last_mined_interval_start = next_interval_start
-                    next_interval_start += INTERVAL_LENGTH_BLOCKS
+                        save_last_pack_block(workdir, current_block)
+                else:
+                    next_interval_start = (
+                        _initial_miner_interval_start(current_block)
+                        if last_mined_interval_start is None
+                        else last_mined_interval_start + INTERVAL_LENGTH_BLOCKS
+                    )
+                    logger.debug(
+                        "miner tick current_block=%d next_interval_start=%d last_mined=%s",
+                        current_block,
+                        next_interval_start,
+                        str(last_mined_interval_start),
+                    )
+
+                    while next_interval_start <= _current_interval_start(current_block):
+                        manifest_key = f"{next_interval_start}/manifest.json"
+                        already_uploaded = await store.object_exists(manifest_key)
+                        if already_uploaded:
+                            logger.info(
+                                "skip mining interval=%s reason=already_uploaded",
+                                _interval_label(next_interval_start),
+                            )
+                            console.print(
+                                f"skip interval {_interval_label(next_interval_start)}: already uploaded"
+                            )
+                        else:
+                            logger.info("starting mining interval=%s", _interval_label(next_interval_start))
+                            dataset_path, manifest_path = await pipeline.run_interval(
+                                sources_file=settings.sources_file,
+                                netuid=settings.netuid,
+                                miner_hotkey=hotkey_ss58,
+                                interval_id=next_interval_start,
+                                workdir=settings.workdir,
+                            )
+                            console.print(
+                                f"mined interval {_interval_label(next_interval_start)} "
+                                f"dataset={dataset_path} manifest={manifest_path}"
+                            )
+                            logger.info(
+                                "completed mining interval=%s dataset=%s manifest=%s",
+                                _interval_label(next_interval_start),
+                                dataset_path,
+                                manifest_path,
+                            )
+                        last_mined_interval_start = next_interval_start
+                        next_interval_start += INTERVAL_LENGTH_BLOCKS
             except Exception as exc:
                 logger.exception("miner loop iteration failed: %s", exc)
 

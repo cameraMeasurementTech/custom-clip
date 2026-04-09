@@ -38,5 +38,5 @@ docker/validation-api.env
 *.swo
 .DS_Store
 
-
+submit/
 docker/data/

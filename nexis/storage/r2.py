@@ -217,6 +217,55 @@ class R2S3Store:
                     keys.append(item["Key"])
             return keys
 
+    async def delete_objects(self, keys: list[str], *, use_write: bool = True) -> int:
+        """Delete objects by key; returns count deleted (best-effort). Uses write credentials."""
+        if not keys:
+            return 0
+        access, secret = self._select_keys(use_write=use_write)
+        deleted = 0
+        async with self._session.create_client(
+            "s3",
+            endpoint_url=self.credentials.endpoint_url,
+            region_name=self.credentials.region,
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            config=self._upload_download_config,
+        ) as client:
+            for i in range(0, len(keys), 1000):
+                chunk = keys[i : i + 1000]
+                resp = await client.delete_objects(
+                    Bucket=self.credentials.bucket_name,
+                    Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+                )
+                ok = resp.get("Deleted") or []
+                errs = resp.get("Errors") or []
+                deleted += len(ok)
+                if errs:
+                    logger.warning(
+                        "delete_objects partial errors bucket=%s count=%d sample=%s",
+                        self.credentials.bucket_name,
+                        len(errs),
+                        errs[:3],
+                    )
+        logger.info(
+            "delete_objects complete bucket=%s requested=%d deleted=%d",
+            self.credentials.bucket_name,
+            len(keys),
+            deleted,
+        )
+        return deleted
+
+    async def delete_prefix(self, prefix: str, *, use_write: bool = True) -> int:
+        """Delete all objects under ``prefix/`` (interval folder on R2)."""
+        base = prefix.strip().strip("/")
+        if not base:
+            return 0
+        keys = await self.list_prefix(f"{base}/")
+        if not keys:
+            logger.debug("delete_prefix no keys bucket=%s prefix=%s/", self.credentials.bucket_name, base)
+            return 0
+        return await self.delete_objects(keys, use_write=use_write)
+
     async def get_object_last_modified(self, key: str) -> datetime | None:
         access, secret = self._select_keys(use_write=False)
         try:

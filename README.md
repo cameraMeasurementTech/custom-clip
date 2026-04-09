@@ -18,6 +18,7 @@ This README is an operator-focused guide for:
 - [System Requirements](#system-requirements)
 - [Local Project Setup](#local-project-setup)
 - [Miner Setup and Run](#miner-setup-and-run)
+- [CLI runbook (all commands)](#cli-runbook-all-commands)
 - [Validator Setup and Run](#validator-setup-and-run)
 - [How Miner Data Validation Works](#how-miner-data-validation-works)
 - [Dataset and Manifest Format](#dataset-and-manifest-format)
@@ -143,11 +144,37 @@ nexis mine --debug
 nexis mine --poll-sec 4
 ```
 
+Prepare and upload examples (read API keys from the environment — **never commit real keys**):
+
+```bash
+# Export keys in your shell, or rely on OPENAI_API_KEY / NEXIS_OPENAI_API_KEYS from .env
+python3 -m nexis.tools.mine_prepare_main \
+  --workdir /path/to/submit \
+  --sources /path/to/submit/sources.txt \
+  --openai-api-key "$OPENAI_API_KEY" \
+  --openai-api-keys-extra "${NEXIS_OPENAI_API_KEYS:-}"
+
+# Default: derive interval from chain, repeat every 30 minutes
+python3 -m nexis.tools.mine_upload_main --workdir /path/to/submit --interval 20m
+
+# Custom cadence
+python3 -m nexis.tools.mine_upload_main --workdir /data/pool --interval 15m
+
+# Single upload, chain-derived interval id
+python3 -m nexis.tools.mine_upload_main --workdir /data/pool --interval once
+
+# Fixed R2 prefix (advanced)
+python3 -m nexis.tools.mine_upload_main --workdir /data/pool --interval-id 1234560
+```
 Miner behavior:
 
 - long-running process (stop with `Ctrl+C`)
-- builds one package per 50-block interval
-- skips interval if manifest already exists
+- R2 prefixes and `out/{interval_id}/` use **`interval_id` = chain interval start** (`block - block % INTERVAL_LENGTH_BLOCKS`); see `nexis/protocol.py` (currently **100**-block alignment). Pack uploads use `NEXIS_MINER_UPLOAD_CADENCE_BLOCKS` (defaults to that same interval length).
+- skips or waits if manifest already exists (see runbook)
+
+### CLI runbook (all commands)
+
+Step-by-step for `commit-credentials`, `mine`, `mine-prepare`, `mine-upload`, `validate`, `validate-source-auth`, and `sync-owner-datasets` is in **[docs/cli-runbook.md](docs/cli-runbook.md)**.
 
 ## Validator Setup and Run
 
@@ -347,6 +374,7 @@ nexis sync-owner-datasets --poll-sec 60
 
 ## More Documentation
 
+- **CLI commands (how to run each script):** `docs/cli-runbook.md`
 - miner guide: `docs/miner.md`
 - validator guide: `docs/validator.md`
 - validator docker deployment: `docker/README.md`

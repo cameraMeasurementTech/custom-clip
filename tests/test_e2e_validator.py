@@ -13,7 +13,7 @@ from nexis.hash_utils import sha256_file
 from nexis.models import ClipRecord, IntervalManifest
 from nexis.serialization import write_dataset_parquet, write_manifest
 from nexis.validator.pipeline import ValidatorPipeline
-from .helpers import LocalObjectStore, run_async
+from .helpers import VALID_TEST_CAPTION, LocalObjectStore, run_async
 
 
 def _record(
@@ -39,7 +39,7 @@ def _record(
         fps=30.0,
         num_frames=150,
         has_audio=True,
-        caption="A moving car in a city scene.",
+        caption=VALID_TEST_CAPTION,
         source_video_url="https://youtube.com/watch?v=abc",
         source_proof={"extractor": "yt-dlp"},
     )

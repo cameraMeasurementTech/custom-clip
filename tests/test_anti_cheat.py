@@ -3,8 +3,10 @@ from __future__ import annotations
 from nexis.models import ClipRecord
 from nexis.validator.checks import run_hard_checks
 
+from .helpers import VALID_TEST_CAPTION
 
-def _row(clip_id: str, start: float, url: str, caption: str = "A person walks across a room.") -> ClipRecord:
+
+def _row(clip_id: str, start: float, url: str, caption: str = VALID_TEST_CAPTION) -> ClipRecord:
     return ClipRecord(
         clip_id=clip_id,
         clip_uri=f"clips/{clip_id}.mp4",
@@ -56,4 +58,24 @@ def test_malicious_youtube_like_domain_detection() -> None:
     rows = [_row("c1", 0.0, "https://youtube.com.evil.tld/watch?v=abc")]
     result = run_hard_checks(rows)
     assert any("non_youtube_source" in item for item in result.failures)
+
+
+def test_short_caption_rejects_under_min_words() -> None:
+    rows = [_row("c1", 0.0, "https://youtube.com/watch?v=abc", caption="one two three four five")]
+    result = run_hard_checks(rows)
+    assert any(item.startswith("short_caption:") for item in result.failures)
+
+
+def test_short_caption_rejects_exactly_twenty_words() -> None:
+    twenty = " ".join(f"w{i}" for i in range(20))
+    rows = [_row("c1", 0.0, "https://youtube.com/watch?v=abc", caption=twenty)]
+    result = run_hard_checks(rows)
+    assert any(item.startswith("short_caption:") for item in result.failures)
+
+
+def test_caption_at_min_words_passes_lexical_gate() -> None:
+    twenty_one = " ".join(f"w{i}" for i in range(21))
+    rows = [_row("c1", 0.0, "https://youtube.com/watch?v=abc", caption=twenty_one)]
+    result = run_hard_checks(rows)
+    assert not any(item.startswith("short_caption:") for item in result.failures)
 

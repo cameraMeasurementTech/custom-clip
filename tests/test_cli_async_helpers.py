@@ -6,11 +6,11 @@ from types import SimpleNamespace
 from nexis.cli import (
     _fetch_hotkeys_with_commitments,
     _load_record_info_snapshot,
-    _resolve_llm_runtime,
     _run_miner_loop,
     _run_validator_loop,
     compute_score_totals_from_decisions,
 )
+from nexis.miner.llm_runtime import resolve_llm_runtime as _resolve_llm_runtime
 from nexis.models import ValidationDecision
 from nexis.config import Settings
 from nexis.scoring import WeightComputer
@@ -22,10 +22,7 @@ def test_resolve_llm_runtime_prefers_openai_when_present() -> None:
     settings.openai_api_key = "openai-key"
     settings.gemini_api_key = "gemini-key"
 
-    provider, api_key, model, base_url, route = _resolve_llm_runtime(
-        settings,
-        openai_model="gpt-4o",
-    )
+    provider, api_key, model, base_url, route = _resolve_llm_runtime(settings, openai_model="gpt-4o")
 
     assert provider == "openai"
     assert api_key == "openai-key"

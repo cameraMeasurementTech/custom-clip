@@ -39,8 +39,8 @@ nexis mine --spec video_v1
 # nexis mine --poll-sec 4
 ```
 
-`nexis mine` runs continuously. Every new 50-block interval, the miner
-builds and uploads one interval package keyed by interval start block.
+`nexis mine` runs continuously. Every new chain interval (`INTERVAL_LENGTH_BLOCKS` in `nexis/protocol.py`, currently **100** blocks), the miner
+builds and uploads one interval package keyed by interval start block (`interval_id` is a multiple of that length).
 The manifest includes `category` metadata from `NEXIS_DATASET_CATEGORY`.
 Captions are generated from timeline-sampled clip frames (default: 12 frames).
 Stop with `Ctrl+C`.

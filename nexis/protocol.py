@@ -10,8 +10,9 @@ SCHEMA_VERSION = "1.0.0"
 
 # Interval semantics (frozen for v1)
 INTERVAL_MODE = "blocks"
+# Chain interval start for miner R2 prefix / out/{interval_id}/ / validator windows: block % INTERVAL_LENGTH_BLOCKS == 0
 INTERVAL_LENGTH_BLOCKS = 100
-WEIGHT_SUBMISSION_INTERVAL_BLOCKS = 300
+WEIGHT_SUBMISSION_INTERVAL_BLOCKS = 250
 UPLOAD_DEADLINE_RESERVED_BLOCKS = 2
 
 # Miner sampling semantics
@@ -31,6 +32,11 @@ FAILURE_LOOKBACK_INTERVALS = 1
 # Data policy
 CLIP_DURATION_SEC = 5.0
 MIN_CLIP_GAP_SEC = 5.0
+# Lexical caption minimum: captions must be strictly longer than 20 words (platform short_caption gate).
+MIN_CAPTION_WORDS = 21
+
+# Miner prepare (mine_one_segment): advance to next source URL after this many consecutive merge/validation rejects.
+PREP_MAX_CONSECUTIVE_REJECTS_PER_URL = 10
 
 
 @dataclass(frozen=True)

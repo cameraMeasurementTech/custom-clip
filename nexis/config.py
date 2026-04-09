@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .protocol import INTERVAL_LENGTH_BLOCKS
 
 
 load_dotenv(override=False)
@@ -35,6 +37,89 @@ class Settings(BaseSettings):
     dataset_spec_default: str = Field(default="video_v1", alias="NEXIS_DATASET_SPEC_DEFAULT")
     dataset_category: str = Field(default="nature_landscape_scenery", alias="NEXIS_DATASET_CATEGORY")
     miner_enabled_specs: str = Field(default="video_v1", alias="NEXIS_MINER_ENABLED_SPECS")
+    miner_continuous_pack_mode: bool = Field(
+        default=True,
+        alias="NEXIS_MINER_CONTINUOUS_PACK_MODE",
+        description=(
+            "Mine one 5s clip per loop into miner_pending_records.jsonl; upload deduped batches on cadence. "
+            "If false, use legacy one full run_interval per INTERVAL_LENGTH_BLOCKS chain interval."
+        ),
+    )
+    miner_upload_cadence_blocks: int = Field(
+        default=INTERVAL_LENGTH_BLOCKS,
+        alias="NEXIS_MINER_UPLOAD_CADENCE_BLOCKS",
+        description=(
+            "Minimum blocks between R2 pack upload attempts in continuous mode. "
+            f"Default equals INTERVAL_LENGTH_BLOCKS ({INTERVAL_LENGTH_BLOCKS}): one attempt per chain interval."
+        ),
+    )
+    miner_r2_prune_old_prefix: bool = Field(
+        default=True,
+        alias="NEXIS_MINER_R2_PRUNE_OLD_PREFIX",
+        description=(
+            "After a successful interval pack upload, delete the R2 object prefix from N uploads ago "
+            "(see NEXIS_MINER_R2_PRUNE_UPLOADS_AGO) to save bucket space."
+        ),
+    )
+    miner_r2_prune_uploads_ago: int = Field(
+        default=2,
+        alias="NEXIS_MINER_R2_PRUNE_UPLOADS_AGO",
+        description=(
+            "When pruning, remove the interval folder from this many successful uploads before the current one "
+            "(e.g. 2 = delete two uploads ago while uploading the latest)."
+        ),
+    )
+    miner_upload_manifest_busy_wait_sec: float = Field(
+        default=1200.0,
+        alias="NEXIS_MINER_UPLOAD_MANIFEST_BUSY_WAIT_SEC",
+        description=(
+            "If {interval_id}/manifest.json already exists on R2 before upload, sleep this many seconds "
+            "and retry (0 = do not wait / skip busy check). When an interval refresher is set, the interval id "
+            "is recomputed from chain after each wait."
+        ),
+    )
+    miner_prepare_validate_before_save: bool = Field(
+        default=True,
+        alias="NEXIS_MINER_PREPARE_VALIDATE_BEFORE_SAVE",
+        description=(
+            "When appending to miner_pending_records.jsonl (mine-prepare / mine_one_segment), merge under lock: "
+            "keep only rows that pass validator hard checks, fix overlaps with existing pending, verify the new "
+            "row's local assets (and optional LLM gates). Rejected clips are not written; removed older overlaps "
+            "are deleted from the file and from disk."
+        ),
+    )
+    miner_prepare_asset_verify: bool = Field(
+        default=True,
+        alias="NEXIS_MINER_PREPARE_ASSET_VERIFY",
+        description=(
+            "With prepare validation enabled, run local 720p/sha checks on each new row before writing pending. "
+            "Set false to only enforce hard checks (YouTube, caption, overlap) if clips are not yet 1280×720."
+        ),
+    )
+    miner_preflight_before_upload: bool = Field(
+        default=False,
+        alias="NEXIS_MINER_PREFLIGHT_BEFORE_UPLOAD",
+        description=(
+            "Before R2 pack upload, re-run validator-style filtering on pending (default off when "
+            "NEXIS_MINER_PREPARE_VALIDATE_BEFORE_SAVE=true). Enable for legacy workdirs or extra safety."
+        ),
+    )
+    miner_preflight_semantic: bool = Field(
+        default=True,
+        alias="NEXIS_MINER_PREFLIGHT_SEMANTIC",
+        description=(
+            "During miner preflight, also run caption semantic checks (validator-style). "
+            "Uses LLM quota; enable only if you want miner-side parity with semantic validation."
+        ),
+    )
+    miner_preflight_category: bool = Field(
+        default=True,
+        alias="NEXIS_MINER_PREFLIGHT_CATEGORY",
+        description=(
+            "During miner preflight, also run strict category checks (validator-style). "
+            "Uses LLM quota."
+        ),
+    )
     validator_enabled_specs: str = Field(
         default="video_v1",
         alias="NEXIS_VALIDATOR_ENABLED_SPECS",
@@ -45,9 +130,35 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_api_keys_extra: str = Field(
+        default="",
+        alias="NEXIS_OPENAI_API_KEYS",
+        description=(
+            "Comma or newline separated extra OpenAI API keys for miner captions. Merged with OPENAI_API_KEY "
+            "(deduplicated). Use NEXIS_CAPTION_OPENAI_RPM_PER_KEY=3 per key (~6/min with two keys)."
+        ),
+    )
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     caption_model: str = Field(default="gpt-4o", alias="NEXIS_CAPTION_MODEL")
     caption_timeout_sec: int = Field(default=30, alias="NEXIS_CAPTION_TIMEOUT_SEC")
+    caption_rate_limit_max_attempts: int = Field(
+        default=15,
+        alias="NEXIS_CAPTION_RATE_LIMIT_MAX_ATTEMPTS",
+        description="OpenAI-compatible caption calls: max tries per clip on 429 rate limits.",
+    )
+    caption_rate_limit_max_sleep_sec: float = Field(
+        default=120.0,
+        alias="NEXIS_CAPTION_RATE_LIMIT_MAX_SLEEP_SEC",
+        description="Cap single sleep between 429 retries (seconds).",
+    )
+    caption_openai_rpm_per_key: int = Field(
+        default=3,
+        alias="NEXIS_CAPTION_OPENAI_RPM_PER_KEY",
+        description=(
+            "Max caption requests per minute per OpenAI API key (proactive spacing). "
+            "With 2 keys at 3 RPM each you get up to ~6 requests/minute. Set 0 to disable spacing."
+        ),
+    )
     validator_semantic_check_enabled: bool = Field(
         default=True,
         alias="NEXIS_VALIDATOR_SEMANTIC_CHECK_ENABLED",
@@ -134,6 +245,34 @@ class Settings(BaseSettings):
         default=86400,
         alias="NEXIS_VALIDATION_API_NONCE_MAX_AGE_SEC",
     )
+
+    @field_validator("miner_upload_cadence_blocks")
+    @classmethod
+    def _cadence_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEXIS_MINER_UPLOAD_CADENCE_BLOCKS must be >= 1")
+        return value
+
+    @field_validator("miner_r2_prune_uploads_ago")
+    @classmethod
+    def _prune_uploads_ago_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEXIS_MINER_R2_PRUNE_UPLOADS_AGO must be >= 1")
+        return value
+
+    @field_validator("miner_upload_manifest_busy_wait_sec")
+    @classmethod
+    def _manifest_busy_wait_non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("NEXIS_MINER_UPLOAD_MANIFEST_BUSY_WAIT_SEC must be >= 0")
+        return value
+
+    @field_validator("caption_openai_rpm_per_key")
+    @classmethod
+    def _caption_rpm_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("NEXIS_CAPTION_OPENAI_RPM_PER_KEY must be >= 0")
+        return value
 
 
 def load_settings() -> Settings:

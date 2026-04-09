@@ -7,6 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+# Must satisfy nexis.protocol.MIN_CAPTION_WORDS in run_hard_checks (overlap / e2e / merge tests).
+VALID_TEST_CAPTION = (
+    "A person walks slowly across a wide open room while natural daylight illuminates "
+    "furniture along the walls in a calm quiet indoor setting seen clearly here."
+)
+
 
 class LocalObjectStore:
     """Filesystem-backed object store for tests."""

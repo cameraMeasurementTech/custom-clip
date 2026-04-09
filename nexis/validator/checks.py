@@ -8,7 +8,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from ..models import ClipRecord
-from ..protocol import MIN_CLIP_GAP_SEC
+from ..protocol import MIN_CAPTION_WORDS, MIN_CLIP_GAP_SEC
 
 
 @dataclass
@@ -71,7 +71,7 @@ def _check_caption_alignment(records: list[ClipRecord]) -> list[str]:
 
     This is intentionally conservative for v1:
     - empty captions fail
-    - extremely short captions fail
+    - captions with fewer than MIN_CAPTION_WORDS words (strictly more than 20) fail as short_caption
     - captions that only repeat URL-like strings fail
     """
     failures: list[str] = []
@@ -80,7 +80,7 @@ def _check_caption_alignment(records: list[ClipRecord]) -> list[str]:
         if not text:
             failures.append(f"empty_caption:{row.clip_id}")
             continue
-        if len(text.split()) < 3:
+        if len(text.split()) < MIN_CAPTION_WORDS:
             failures.append(f"short_caption:{row.clip_id}")
             continue
         if "http://" in text or "https://" in text:

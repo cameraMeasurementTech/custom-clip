@@ -5,10 +5,10 @@ This document freezes the v1 protocol contract used by miner and validator imple
 ## Interval Model
 
 - Interval mode: `blocks`
-- Interval length: `50` blocks
-- Interval ID: interval start block (example: `7756900` for range `7756900-7756950`)
+- Interval length: `INTERVAL_LENGTH_BLOCKS` in `nexis/protocol.py` (currently **100** blocks)
+- Interval ID: interval start block, i.e. `block - (block % INTERVAL_LENGTH_BLOCKS)` (example: `7756900` for range `7756900-7757000` when length is 100)
 - Upload reserve/deadline buffer: `2` blocks before interval close
-- Validator cadence: evaluate every closed 50-block interval
+- Validator cadence: evaluate every closed interval of that length
 - Weight cadence: submit `set_weights` every `250` blocks
 
 ## Submission Package

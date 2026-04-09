@@ -86,7 +86,7 @@ docker inspect --format '{{index .RepoDigests 0}}' nexis-validator
 
 `nexis validate` runs continuously and:
 
-- validates each closed 50-block interval (`[start, start+50)`) after reserve (`2` blocks)
+- validates each closed interval (`[start, start+INTERVAL_LENGTH_BLOCKS)`) after reserve (`2` blocks); length is `INTERVAL_LENGTH_BLOCKS` in `nexis/protocol.py` (currently **100**)
 - runs hard checks on full record sets
 - verifies sampled clip/frame assets against row SHA256 fields
 - enforces sampled clip resolution (`1280x720`)
