@@ -1027,13 +1027,19 @@ def validate(
         logger.warning(
             "validator semantic checks enabled but no API key configured; semantic checker will fail-open"
         )
+    merged_openai_keys = merge_openai_api_keys(settings.openai_api_key, settings.openai_api_keys_extra)
+    semantic_api_keys = (
+        merged_openai_keys
+        if semantic_provider == "openai" and merged_openai_keys
+        else ([semantic_api_key] if semantic_api_key.strip() else [])
+    )
     semantic_checker = CaptionSemanticChecker(
         enabled=settings.validator_semantic_check_enabled,
-        api_key=semantic_api_key,
+        api_keys=semantic_api_keys,
         model=semantic_model,
         timeout_sec=settings.validator_semantic_timeout_sec,
         max_samples=settings.validator_semantic_max_samples,
-        max_transient_retries=settings.validator_semantic_max_transient_retries,
+        max_key_rotation_rounds=settings.validator_semantic_max_key_rotation_rounds,
         retry_base_sleep_sec=settings.validator_semantic_retry_base_sleep_sec,
         retry_sleep_cap_sec=settings.validator_semantic_retry_sleep_cap_sec,
         provider=semantic_provider,
@@ -1059,13 +1065,21 @@ def validate(
         raise typer.BadParameter(
             "NEXIS_VALIDATOR_CATEGORY_CHECK_ENABLED=true requires OPENAI_API_KEY or GEMINI_API_KEY"
         )
+    category_api_keys = (
+        merged_openai_keys
+        if category_provider == "openai" and merged_openai_keys
+        else ([category_api_key] if category_api_key.strip() else [])
+    )
     category_checker = NatureCategoryChecker(
         enabled=settings.validator_category_check_enabled,
-        api_key=category_api_key,
+        api_keys=category_api_keys,
         timeout_sec=settings.validator_category_timeout_sec,
         max_samples=settings.validator_category_max_samples,
         base_url=category_base_url,
         model=category_model,
+        max_key_rotation_rounds=settings.validator_semantic_max_key_rotation_rounds,
+        retry_base_sleep_sec=settings.validator_semantic_retry_base_sleep_sec,
+        retry_sleep_cap_sec=settings.validator_semantic_retry_sleep_cap_sec,
     )
     record_info_read_store: R2S3Store | None = None
     record_info_read_creds = _build_shared_bucket_credentials(

@@ -5,8 +5,6 @@ from pathlib import Path
 from nexis.models import ClipRecord
 from nexis.validator.category_check import (
     NatureCategoryChecker,
-    caption_gate_check_nature,
-    caption_gate_decision_from_caption,
     get_middle_three_frame_paths,
     parse_strict_pass,
 )
@@ -33,16 +31,6 @@ def _row(*, caption: str) -> ClipRecord:
         source_video_url="https://youtube.com/watch?v=abc",
         source_proof={"extractor": "yt-dlp"},
     )
-
-
-def test_caption_gate_decision_rejects_non_nature() -> None:
-    result = caption_gate_check_nature("A man driving a car through city traffic.")
-    assert caption_gate_decision_from_caption(result) == "reject"
-
-
-def test_caption_gate_decision_borderline_nature() -> None:
-    result = caption_gate_check_nature("A scenic mountain landscape with a road in view.")
-    assert caption_gate_decision_from_caption(result) == "borderline"
 
 
 def test_middle_three_frame_selection_handles_current_frame_shape(tmp_path: Path) -> None:

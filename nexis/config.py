@@ -175,12 +175,14 @@ class Settings(BaseSettings):
         default=8,
         alias="NEXIS_VALIDATOR_SEMANTIC_MAX_SAMPLES",
     )
-    validator_semantic_max_transient_retries: int = Field(
-        default=5,
-        alias="NEXIS_VALIDATOR_SEMANTIC_MAX_TRANSIENT_RETRIES",
+    validator_semantic_max_key_rotation_rounds: int = Field(
+        default=2,
+        alias="NEXIS_VALIDATOR_SEMANTIC_MAX_KEY_ROTATION_ROUNDS",
         description=(
-            "After a transient LLM error (429, 5xx, timeout), retry this many times before "
-            "failing the clip with caption_semantic_transient_exhausted."
+            "Pre-validation LLM calls: number of full passes through all OpenAI keys. "
+            "Per pass, rotate key on each transient error (no sleep between keys). "
+            "After a full pass where every key failed transient, sleep once, then start again from the first key. "
+            "Default 2 with 3 keys => up to 6 attempts, then caption_semantic_transient_exhausted."
         ),
     )
     validator_semantic_retry_base_sleep_sec: float = Field(

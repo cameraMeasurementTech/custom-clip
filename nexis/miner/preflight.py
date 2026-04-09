@@ -35,11 +35,13 @@ _SINGLE_CLIP_FAILURE_PREFIXES = frozenset(
         "caption_semantic_injection_keyword",
         "caption_semantic_mismatch",
         "caption_semantic_transient_exhausted",
+        "caption_semantic_rate_limited",
         "category_strict_frames_missing",
         "category_strict_api_key_missing",
         "category_strict_client_unavailable",
         "category_strict_response_invalid",
         "category_strict_reject",
+        "category_strict_transient_exhausted",
     }
 )
 
@@ -227,9 +229,11 @@ def run_preflight_on_candidates(
 
 def build_preflight_llm_checkers(settings: "Settings") -> tuple[object | None, object | None]:
     """Optional semantic/category checkers when miner preflight mirrors validator LLM gates."""
-    from ..miner.llm_runtime import resolve_llm_runtime
+    from ..miner.llm_runtime import openai_api_keys_merged, resolve_llm_runtime
     from ..validator.caption_semantic import CaptionSemanticChecker
     from ..validator.category_check import NatureCategoryChecker
+
+    merged_openai = openai_api_keys_merged(settings)
 
     semantic: object | None = None
     if settings.miner_preflight_semantic:
@@ -237,13 +241,17 @@ def build_preflight_llm_checkers(settings: "Settings") -> tuple[object | None, o
             settings,
             openai_model=settings.validator_semantic_model,
         )
+        if prov == "openai":
+            sem_keys = merged_openai if merged_openai else ([key] if key.strip() else [])
+        else:
+            sem_keys = [key] if key.strip() else []
         semantic = CaptionSemanticChecker(
             enabled=True,
-            api_key=key,
+            api_keys=sem_keys,
             model=model,
             timeout_sec=settings.validator_semantic_timeout_sec,
             max_samples=settings.validator_semantic_max_samples,
-            max_transient_retries=settings.validator_semantic_max_transient_retries,
+            max_key_rotation_rounds=settings.validator_semantic_max_key_rotation_rounds,
             retry_base_sleep_sec=settings.validator_semantic_retry_base_sleep_sec,
             retry_sleep_cap_sec=settings.validator_semantic_retry_sleep_cap_sec,
             provider=prov,
@@ -255,12 +263,19 @@ def build_preflight_llm_checkers(settings: "Settings") -> tuple[object | None, o
             settings,
             openai_model=settings.validator_category_model,
         )
+        if cprov == "openai":
+            cat_keys = merged_openai if merged_openai else ([ckey] if ckey.strip() else [])
+        else:
+            cat_keys = [ckey] if ckey.strip() else []
         category = NatureCategoryChecker(
             enabled=True,
-            api_key=ckey,
+            api_keys=cat_keys,
             timeout_sec=settings.validator_category_timeout_sec,
             max_samples=settings.validator_category_max_samples,
             base_url=cbase,
             model=cmodel,
+            max_key_rotation_rounds=settings.validator_semantic_max_key_rotation_rounds,
+            retry_base_sleep_sec=settings.validator_semantic_retry_base_sleep_sec,
+            retry_sleep_cap_sec=settings.validator_semantic_retry_sleep_cap_sec,
         )
     return semantic, category

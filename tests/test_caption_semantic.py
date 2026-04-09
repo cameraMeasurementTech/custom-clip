@@ -70,7 +70,7 @@ def test_semantic_transient_exhausted_after_retries(tmp_path: Path, monkeypatch:
 
     def always_transient(self, *, client, caption, frame_paths):
         calls["n"] += 1
-        raise caption_semantic_mod._TransientLLMError("Error code: 429")
+        raise caption_semantic_mod._TransientLLMError("Error code: 503 - service unavailable")
 
     monkeypatch.setattr(CaptionSemanticChecker, "_judge_match", always_transient)
     monkeypatch.setattr(caption_semantic_mod.time, "sleep", lambda _s: None)
@@ -81,14 +81,15 @@ def test_semantic_transient_exhausted_after_retries(tmp_path: Path, monkeypatch:
         model="m",
         timeout_sec=20,
         max_samples=8,
-        max_transient_retries=2,
+        max_key_rotation_rounds=2,
     )
     failures = checker.check(
         sampled=[_row()],
         frame_paths_by_clip_id={"c1": [frame]},
     )
     assert failures == ["caption_semantic_transient_exhausted:c1"]
-    assert calls["n"] == 3
+    # One key: two full sweeps, no sleep between (same key twice) — actually two sweeps = 2 attempts
+    assert calls["n"] == 2
 
 
 def test_semantic_transient_then_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,7 +100,7 @@ def test_semantic_transient_then_succeeds(tmp_path: Path, monkeypatch: pytest.Mo
     def flaky(self, *, client, caption, frame_paths):
         calls["n"] += 1
         if calls["n"] < 2:
-            raise caption_semantic_mod._TransientLLMError("429")
+            raise caption_semantic_mod._TransientLLMError("Error code: 503")
         return True
 
     monkeypatch.setattr(CaptionSemanticChecker, "_judge_match", flaky)
@@ -111,7 +112,7 @@ def test_semantic_transient_then_succeeds(tmp_path: Path, monkeypatch: pytest.Mo
         model="m",
         timeout_sec=20,
         max_samples=8,
-        max_transient_retries=5,
+        max_key_rotation_rounds=2,
     )
     failures = checker.check(
         sampled=[_row()],
@@ -119,6 +120,65 @@ def test_semantic_transient_then_succeeds(tmp_path: Path, monkeypatch: pytest.Mo
     )
     assert failures == []
     assert calls["n"] == 2
+
+
+def test_semantic_second_key_used_after_first_transient(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = tmp_path / "c1.jpg"
+    frame.write_bytes(b"frame")
+    n = {"calls": 0}
+
+    def flaky(self, *, client, caption, frame_paths):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            raise caption_semantic_mod._TransientLLMError("Error code: 429 - rate limit")
+        return True
+
+    monkeypatch.setattr(CaptionSemanticChecker, "_judge_match", flaky)
+    monkeypatch.setattr(caption_semantic_mod.time, "sleep", lambda _s: None)
+
+    checker = CaptionSemanticChecker(
+        enabled=True,
+        api_keys=["keyAAAA", "keyBBBB"],
+        model="m",
+        timeout_sec=20,
+        max_samples=8,
+        max_key_rotation_rounds=2,
+    )
+    failures = checker.check(
+        sampled=[_row()],
+        frame_paths_by_clip_id={"c1": [frame]},
+    )
+    assert failures == []
+    # First key hits 429, second key succeeds in the same round (no sleep between keys).
+    assert n["calls"] == 2
+
+
+def test_semantic_three_keys_two_sweeps_six_tries_then_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = tmp_path / "c1.jpg"
+    frame.write_bytes(b"frame")
+    n = {"calls": 0}
+
+    def always_transient(self, *, client, caption, frame_paths):
+        n["calls"] += 1
+        raise caption_semantic_mod._TransientLLMError("Error code: 429 - rate limit")
+
+    monkeypatch.setattr(CaptionSemanticChecker, "_judge_match", always_transient)
+    monkeypatch.setattr(caption_semantic_mod.time, "sleep", lambda _s: None)
+
+    checker = CaptionSemanticChecker(
+        enabled=True,
+        api_keys=["ka", "kb", "kc"],
+        model="m",
+        timeout_sec=20,
+        max_samples=8,
+        max_key_rotation_rounds=2,
+    )
+    failures = checker.check(
+        sampled=[_row()],
+        frame_paths_by_clip_id={"c1": [frame]},
+    )
+    assert failures == ["caption_semantic_rate_limited:c1"]
+    assert n["calls"] == 3
 
 
 def test_retry_delay_parses_try_again_in_message() -> None:

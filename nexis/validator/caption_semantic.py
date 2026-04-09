@@ -31,7 +31,13 @@ _TRANSIENT_LLM_ERROR_HINTS = (
 
 
 class _TransientLLMError(Exception):
-    """Transient LLM server-side issue; caller may retry."""
+    """Transient LLM server-side issue; caller may rotate keys / retry sweeps."""
+
+
+class RateLimitSemanticError(Exception):
+    """Every API key in a sweep returned 429 / TPM — clip fails after rotation with no successful call."""
+
+    pass
 
 
 def _retry_delay_from_message(message: str, attempt: int, base_sleep_sec: float, cap_sec: float) -> float:
@@ -42,7 +48,24 @@ def _retry_delay_from_message(message: str, attempt: int, base_sleep_sec: float,
     return min(base_sleep_sec * (2**attempt), cap_sec)
 
 
+def _is_rate_limit_message(msg: str) -> bool:
+    """Detect 429 / TPM from exception text (including wrapped ``_TransientLLMError``)."""
+    lowered = msg.lower()
+    if "error code: 429" in lowered or "status code: 429" in lowered:
+        return True
+    if "rate_limit_exceeded" in lowered.replace(" ", ""):
+        return True
+    if "tokens per min" in lowered or "(tpm)" in lowered:
+        return True
+    if "rate limit reached" in lowered:
+        return True
+    if "too many requests" in lowered and "429" in lowered:
+        return True
+    return False
+
+
 def _is_transient_llm_error(error: Exception) -> bool:
+    """Includes 429 — rotate to next key; ``_judge_with_key_failover`` may fail if all keys 429."""
     status_code = getattr(error, "status_code", None)
     if isinstance(status_code, int) and status_code in _TRANSIENT_LLM_STATUS_CODES:
         return True
@@ -50,15 +73,21 @@ def _is_transient_llm_error(error: Exception) -> bool:
     return any(hint in lowered for hint in _TRANSIENT_LLM_ERROR_HINTS)
 
 
+_OPENAI_CLIENT_MAX_RETRIES = 0
+
+
 class CaptionSemanticChecker:
     """Optional semantic checker using OpenAI-compatible vision APIs.
 
-    Transient API errors (429, 5xx, timeouts) are retried; after exhausting retries the clip
-    fails with ``caption_semantic_transient_exhausted``.
+    Transient errors (429, 5xx, timeouts): try the **next API key immediately** (no sleep between keys).
+    If **every key** in a sweep returns **429 / TPM**, the clip fails immediately with
+    ``caption_semantic_rate_limited`` (no extra sweeps).
+    Otherwise, after a full pass through all keys, **sleep**, then retry from the **first** key.
+    After ``max_key_rotation_rounds`` full passes without success, fail with ``caption_semantic_transient_exhausted``.
 
     Other behavior:
-    - disabled checker or missing key returns no failures
-    - client import failure returns no failures
+    - disabled checker or missing keys returns no failures
+    - client import failure skips that key only
     - unparseable model outputs are treated as mismatch (same as before)
     """
 
@@ -66,22 +95,26 @@ class CaptionSemanticChecker:
         self,
         *,
         enabled: bool,
-        api_key: str,
+        api_key: str = "",
+        api_keys: list[str] | None = None,
         model: str,
         timeout_sec: int,
         max_samples: int,
-        max_transient_retries: int = 5,
+        max_key_rotation_rounds: int = 2,
         retry_base_sleep_sec: float = 2.0,
         retry_sleep_cap_sec: float = 120.0,
         provider: str = "openai",
         base_url: str | None = None,
     ):
         self._enabled = enabled
-        self._api_key = api_key.strip()
+        if api_keys is not None:
+            self._api_keys = [k.strip() for k in api_keys if k.strip()]
+        else:
+            self._api_keys = [api_key.strip()] if api_key.strip() else []
         self._model = model
         self._timeout_sec = timeout_sec
         self._max_samples = max(0, max_samples)
-        self._max_transient_retries = max(0, int(max_transient_retries))
+        self._max_key_rotation_rounds = max(1, int(max_key_rotation_rounds))
         self._retry_base_sleep_sec = max(0.1, float(retry_base_sleep_sec))
         self._retry_sleep_cap_sec = max(1.0, float(retry_sleep_cap_sec))
         self._provider = provider
@@ -89,7 +122,101 @@ class CaptionSemanticChecker:
 
     @property
     def active(self) -> bool:
-        return self._enabled and bool(self._api_key) and self._max_samples > 0
+        return self._enabled and bool(self._api_keys) and self._max_samples > 0
+
+    def _try_build_client(self, api_key: str) -> object | None:
+        try:
+            from openai import OpenAI
+
+            client_kwargs: dict[str, object] = {
+                "api_key": api_key,
+                "timeout": self._timeout_sec,
+                "max_retries": _OPENAI_CLIENT_MAX_RETRIES,
+            }
+            if self._base_url:
+                client_kwargs["base_url"] = self._base_url
+            return OpenAI(**client_kwargs)
+        except Exception:
+            return None
+
+    def _judge_with_key_failover(
+        self,
+        *,
+        caption: str,
+        frame_paths: list[Path],
+        clip_id: str,
+    ) -> tuple[bool, bool | None]:
+        """Return ``(transient_exhausted, verdict)``. ``verdict`` is meaningful only if not exhausted."""
+        max_rounds = self._max_key_rotation_rounds
+        last_exc: _TransientLLMError | None = None
+        for round_i in range(max_rounds):
+            attempted_call = False
+            keys_tried = 0
+            keys_rate_limited = 0
+            saw_non_rate_transient = False
+            for idx, key in enumerate(self._api_keys):
+                client = self._try_build_client(key)
+                if client is None:
+                    continue
+                attempted_call = True
+                keys_tried += 1
+                try:
+                    verdict = self._judge_match(
+                        client=client,
+                        caption=caption,
+                        frame_paths=frame_paths,
+                    )
+                    return (False, verdict)
+                except _TransientLLMError as exc:
+                    last_exc = exc
+                    if _is_rate_limit_message(str(exc)):
+                        keys_rate_limited += 1
+                    else:
+                        saw_non_rate_transient = True
+                    logger.warning(
+                        "Caption semantic transient LLM error clip_id=%s key_index=%d/%d sweep=%d/%d: %s",
+                        clip_id,
+                        idx,
+                        len(self._api_keys) - 1,
+                        round_i + 1,
+                        max_rounds,
+                        exc,
+                    )
+            if not attempted_call:
+                logger.error("Caption semantic OpenAI client unavailable for all keys clip_id=%s", clip_id)
+                return (True, None)
+            if (
+                keys_tried > 0
+                and keys_rate_limited == keys_tried
+                and not saw_non_rate_transient
+            ):
+                raise RateLimitSemanticError(
+                    f"every API key returned 429/TPM ({keys_tried} key(s)) in sweep {round_i + 1}"
+                )
+            if round_i >= max_rounds - 1:
+                logger.warning(
+                    "Caption semantic transient exhausted clip_id=%s after %d full key sweep(s) (%d key(s)): %s",
+                    clip_id,
+                    max_rounds,
+                    len(self._api_keys),
+                    last_exc,
+                )
+                return (True, None)
+            delay = _retry_delay_from_message(
+                str(last_exc or ""),
+                round_i,
+                self._retry_base_sleep_sec,
+                self._retry_sleep_cap_sec,
+            )
+            logger.warning(
+                "Caption semantic all keys transient clip_id=%s; sleeping %.1fs then sweep %d/%d from first key",
+                clip_id,
+                delay,
+                round_i + 2,
+                max_rounds,
+            )
+            time.sleep(delay)
+        return (True, None)
 
     def check(
         self,
@@ -98,19 +225,6 @@ class CaptionSemanticChecker:
         frame_paths_by_clip_id: dict[str, list[Path]],
     ) -> list[str]:
         if not self.active:
-            return []
-
-        try:
-            from openai import OpenAI
-
-            client_kwargs: dict[str, object] = {
-                "api_key": self._api_key,
-                "timeout": self._timeout_sec,
-            }
-            if self._base_url:
-                client_kwargs["base_url"] = self._base_url
-            client = OpenAI(**client_kwargs)
-        except Exception:
             return []
 
         failures: list[str] = []
@@ -129,44 +243,23 @@ class CaptionSemanticChecker:
             ]
             if not frame_paths:
                 continue
-            max_attempts = 1 + self._max_transient_retries
-            verdict: bool | None = None
-            exhausted = False
-            for attempt in range(max_attempts):
-                try:
-                    verdict = self._judge_match(
-                        client=client,
-                        caption=row.caption,
-                        frame_paths=frame_paths[:12],
-                    )
-                    break
-                except _TransientLLMError as exc:
-                    if attempt >= max_attempts - 1:
-                        logger.warning(
-                            "Caption semantic transient errors exhausted for clip_id=%s after %d attempt(s): %s",
-                            row.clip_id,
-                            max_attempts,
-                            exc,
-                        )
-                        failures.append(f"caption_semantic_transient_exhausted:{row.clip_id}")
-                        exhausted = True
-                        break
-                    delay = _retry_delay_from_message(
-                        str(exc),
-                        attempt,
-                        self._retry_base_sleep_sec,
-                        self._retry_sleep_cap_sec,
-                    )
-                    logger.warning(
-                        "Caption semantic transient LLM error clip_id=%s attempt %d/%d; retry in %.1fs: %s",
-                        row.clip_id,
-                        attempt + 1,
-                        max_attempts,
-                        delay,
-                        exc,
-                    )
-                    time.sleep(delay)
+            try:
+                exhausted, verdict = self._judge_with_key_failover(
+                    caption=row.caption,
+                    frame_paths=frame_paths[:12],
+                    clip_id=row.clip_id,
+                )
+            except RateLimitSemanticError as exc:
+                logger.warning(
+                    "Caption semantic all keys rate limited (clip rejected) clip_id=%s: %s",
+                    row.clip_id,
+                    exc,
+                )
+                failures.append(f"caption_semantic_rate_limited:{row.clip_id}")
+                checked += 1
+                continue
             if exhausted:
+                failures.append(f"caption_semantic_transient_exhausted:{row.clip_id}")
                 checked += 1
                 continue
             if verdict is False or verdict is None:

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import logging
+import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..models import ClipRecord
+from .caption_semantic import _TransientLLMError, _is_transient_llm_error, _retry_delay_from_message
 
 logger = logging.getLogger(__name__)
 
@@ -97,32 +99,7 @@ _STRONG_NATURE_PHRASES = {
     "the main subject is a landscape",
     "the main focus is natural scenery",
 }
-_TRANSIENT_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
-_TRANSIENT_LLM_ERROR_HINTS = (
-    "timeout",
-    "timed out",
-    "rate limit",
-    "too many requests",
-    "temporarily unavailable",
-    "internal server error",
-    "service unavailable",
-    "bad gateway",
-    "gateway timeout",
-    "connection error",
-    "connection reset",
-)
-
-
-class _FailOpenTransientLLMError(Exception):
-    """Transient LLM server-side issue; category check should pass."""
-
-
-def _is_transient_llm_error(error: Exception) -> bool:
-    status_code = getattr(error, "status_code", None)
-    if isinstance(status_code, int) and status_code in _TRANSIENT_LLM_STATUS_CODES:
-        return True
-    lowered = str(error).lower()
-    return any(hint in lowered for hint in _TRANSIENT_LLM_ERROR_HINTS)
+_OPENAI_CLIENT_MAX_RETRIES = 0
 
 
 @dataclass
@@ -252,18 +229,28 @@ class NatureCategoryChecker:
         self,
         *,
         enabled: bool,
-        api_key: str,
+        api_key: str = "",
+        api_keys: list[str] | None = None,
         timeout_sec: int,
         max_samples: int,
         base_url: str | None,
         model: str = _DEFAULT_STRICT_MODEL,
+        max_key_rotation_rounds: int = 2,
+        retry_base_sleep_sec: float = 2.0,
+        retry_sleep_cap_sec: float = 120.0,
     ):
         self._enabled = enabled
-        self._api_key = api_key.strip()
+        if api_keys is not None:
+            self._api_keys = [k.strip() for k in api_keys if k.strip()]
+        else:
+            self._api_keys = [api_key.strip()] if api_key.strip() else []
         self._timeout_sec = timeout_sec
         self._max_samples = max(0, max_samples)
         self._base_url = base_url
         self._model = model
+        self._max_key_rotation_rounds = max(1, int(max_key_rotation_rounds))
+        self._retry_base_sleep_sec = max(0.1, float(retry_base_sleep_sec))
+        self._retry_sleep_cap_sec = max(1.0, float(retry_sleep_cap_sec))
 
     @property
     def active(self) -> bool:
@@ -280,7 +267,6 @@ class NatureCategoryChecker:
 
         failures: list[str] = []
         checked = 0
-        client = None
         for row in sampled:
             if checked >= self._max_samples:
                 break
@@ -291,24 +277,17 @@ class NatureCategoryChecker:
                 checked += 1
                 continue
 
-            if not self._api_key:
+            if not self._api_keys:
                 failures.append(f"category_strict_api_key_missing:{row.clip_id}")
                 checked += 1
                 continue
-            if client is None:
-                client = self._build_client()
-                if client is None:
-                    failures.append(f"category_strict_client_unavailable:{row.clip_id}")
-                    checked += 1
-                    continue
-            try:
-                parsed = self._run_strict_pass(client=client, frame_paths=middle_three)
-            except _FailOpenTransientLLMError as exc:
-                logger.warning(
-                    "Category strict transient LLM error for clip_id=%s; fail-open pass: %s",
-                    row.clip_id,
-                    exc,
-                )
+            status, parsed = self._strict_with_key_failover(frame_paths=middle_three, clip_id=row.clip_id)
+            if status == "no_client":
+                failures.append(f"category_strict_client_unavailable:{row.clip_id}")
+                checked += 1
+                continue
+            if status == "exhausted":
+                failures.append(f"category_strict_transient_exhausted:{row.clip_id}")
                 checked += 1
                 continue
             if parsed is None:
@@ -321,19 +300,77 @@ class NatureCategoryChecker:
             checked += 1
         return failures
 
-    def _build_client(self) -> object | None:
+    def _try_build_client(self, api_key: str) -> object | None:
         try:
             from openai import OpenAI
 
             kwargs: dict[str, Any] = {
-                "api_key": self._api_key,
+                "api_key": api_key,
                 "timeout": self._timeout_sec,
+                "max_retries": _OPENAI_CLIENT_MAX_RETRIES,
             }
             if self._base_url:
                 kwargs["base_url"] = self._base_url
             return OpenAI(**kwargs)
         except Exception:
             return None
+
+    def _strict_with_key_failover(
+        self,
+        *,
+        frame_paths: list[Path],
+        clip_id: str,
+    ) -> tuple[str, StrictPassResult | None]:
+        """Return ``("ok", parsed)``, ``("exhausted", None)``, or ``("no_client", None)``."""
+        max_rounds = self._max_key_rotation_rounds
+        last_exc: _TransientLLMError | None = None
+        for round_i in range(max_rounds):
+            attempted_call = False
+            for idx, key in enumerate(self._api_keys):
+                client = self._try_build_client(key)
+                if client is None:
+                    continue
+                attempted_call = True
+                try:
+                    parsed = self._run_strict_pass(client=client, frame_paths=frame_paths)
+                    return ("ok", parsed)
+                except _TransientLLMError as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "Category strict transient LLM error clip_id=%s key_index=%d/%d sweep=%d/%d: %s",
+                        clip_id,
+                        idx,
+                        len(self._api_keys) - 1,
+                        round_i + 1,
+                        max_rounds,
+                        exc,
+                    )
+            if not attempted_call:
+                logger.error("Category strict OpenAI client unavailable for all keys clip_id=%s", clip_id)
+                return ("no_client", None)
+            if round_i >= max_rounds - 1:
+                logger.warning(
+                    "Category strict transient exhausted clip_id=%s after %d full key sweep(s): %s",
+                    clip_id,
+                    max_rounds,
+                    last_exc,
+                )
+                return ("exhausted", None)
+            delay = _retry_delay_from_message(
+                str(last_exc or ""),
+                round_i,
+                self._retry_base_sleep_sec,
+                self._retry_sleep_cap_sec,
+            )
+            logger.warning(
+                "Category strict all keys transient clip_id=%s; sleeping %.1fs then sweep %d/%d from first key",
+                clip_id,
+                delay,
+                round_i + 2,
+                max_rounds,
+            )
+            time.sleep(delay)
+        return ("exhausted", None)
 
     def _run_strict_pass(self, *, client: object, frame_paths: list[Path]) -> StrictPassResult | None:
         content: list[dict[str, Any]] = [{"type": "text", "text": _STRICT_PROMPT}]
@@ -356,7 +393,7 @@ class NatureCategoryChecker:
             return self._parse_strict_text(str(text))
         except Exception as exc:
             if _is_transient_llm_error(exc):
-                raise _FailOpenTransientLLMError(str(exc)) from exc
+                raise _TransientLLMError(str(exc)) from exc
             return None
 
     def _parse_strict_text(self, output_text: str) -> StrictPassResult | None:

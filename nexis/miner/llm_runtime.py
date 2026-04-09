@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from ..config import Settings
+from .captioner import merge_openai_api_keys
 
 logger = logging.getLogger(__name__)
 
@@ -48,3 +49,8 @@ def resolve_llm_runtime(
         None,
         "no_api_key",
     )
+
+
+def openai_api_keys_merged(settings: Settings) -> list[str]:
+    """All OpenAI keys (primary + ``NEXIS_OPENAI_API_KEYS``), deduped — same order as captioning."""
+    return merge_openai_api_keys(settings.openai_api_key, settings.openai_api_keys_extra)
