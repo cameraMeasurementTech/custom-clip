@@ -34,6 +34,7 @@ _SINGLE_CLIP_FAILURE_PREFIXES = frozenset(
         "invalid_resolution",
         "caption_semantic_injection_keyword",
         "caption_semantic_mismatch",
+        "caption_semantic_transient_exhausted",
         "category_strict_frames_missing",
         "category_strict_api_key_missing",
         "category_strict_client_unavailable",
@@ -242,6 +243,9 @@ def build_preflight_llm_checkers(settings: "Settings") -> tuple[object | None, o
             model=model,
             timeout_sec=settings.validator_semantic_timeout_sec,
             max_samples=settings.validator_semantic_max_samples,
+            max_transient_retries=settings.validator_semantic_max_transient_retries,
+            retry_base_sleep_sec=settings.validator_semantic_retry_base_sleep_sec,
+            retry_sleep_cap_sec=settings.validator_semantic_retry_sleep_cap_sec,
             provider=prov,
             base_url=base,
         )

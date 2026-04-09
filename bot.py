@@ -100,7 +100,7 @@ def get_youtube_urls(
             "key": api_key,
             # "videoDefinition": "high",
             "videoDuration": VIDEO_DURATION,
-            "order": order,
+            "order": "relevance",
         }
 
         if next_page_token:

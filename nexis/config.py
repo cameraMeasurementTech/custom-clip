@@ -97,7 +97,7 @@ class Settings(BaseSettings):
         ),
     )
     miner_preflight_before_upload: bool = Field(
-        default=False,
+        default=True,
         alias="NEXIS_MINER_PREFLIGHT_BEFORE_UPLOAD",
         description=(
             "Before R2 pack upload, re-run validator-style filtering on pending (default off when "
@@ -174,6 +174,24 @@ class Settings(BaseSettings):
     validator_semantic_max_samples: int = Field(
         default=8,
         alias="NEXIS_VALIDATOR_SEMANTIC_MAX_SAMPLES",
+    )
+    validator_semantic_max_transient_retries: int = Field(
+        default=5,
+        alias="NEXIS_VALIDATOR_SEMANTIC_MAX_TRANSIENT_RETRIES",
+        description=(
+            "After a transient LLM error (429, 5xx, timeout), retry this many times before "
+            "failing the clip with caption_semantic_transient_exhausted."
+        ),
+    )
+    validator_semantic_retry_base_sleep_sec: float = Field(
+        default=2.0,
+        alias="NEXIS_VALIDATOR_SEMANTIC_RETRY_BASE_SLEEP_SEC",
+        description="Base seconds for exponential backoff when the API does not suggest a wait time.",
+    )
+    validator_semantic_retry_sleep_cap_sec: float = Field(
+        default=120.0,
+        alias="NEXIS_VALIDATOR_SEMANTIC_RETRY_SLEEP_CAP_SEC",
+        description="Maximum sleep between semantic-check retries (seconds).",
     )
     validator_category_check_enabled: bool = Field(
         default=True,

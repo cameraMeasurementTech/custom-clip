@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+import time
 from pathlib import Path
 
 from ..models import ClipRecord
-import logging
+
 logger = logging.getLogger(__name__)
 
 _PROMPT_INJECTION_CAPTION_RE = re.compile(r"\b(?:match|true)\b", re.IGNORECASE)
@@ -28,8 +30,16 @@ _TRANSIENT_LLM_ERROR_HINTS = (
 )
 
 
-class _FailOpenTransientLLMError(Exception):
-    """Transient LLM server-side issue; caption semantic check should pass."""
+class _TransientLLMError(Exception):
+    """Transient LLM server-side issue; caller may retry."""
+
+
+def _retry_delay_from_message(message: str, attempt: int, base_sleep_sec: float, cap_sec: float) -> float:
+    """Prefer provider-suggested wait (e.g. OpenAI 429 body), else exponential backoff."""
+    m = re.search(r"try again in ([0-9.]+)\s*s", message, re.IGNORECASE)
+    if m:
+        return min(float(m.group(1)) + 0.25, cap_sec)
+    return min(base_sleep_sec * (2**attempt), cap_sec)
 
 
 def _is_transient_llm_error(error: Exception) -> bool:
@@ -43,10 +53,13 @@ def _is_transient_llm_error(error: Exception) -> bool:
 class CaptionSemanticChecker:
     """Optional semantic checker using OpenAI-compatible vision APIs.
 
-    Fail-open behavior:
-    - disabled checker returns no failures
-    - API errors return no failures
-    - unparseable model outputs are treated as non-failures
+    Transient API errors (429, 5xx, timeouts) are retried; after exhausting retries the clip
+    fails with ``caption_semantic_transient_exhausted``.
+
+    Other behavior:
+    - disabled checker or missing key returns no failures
+    - client import failure returns no failures
+    - unparseable model outputs are treated as mismatch (same as before)
     """
 
     def __init__(
@@ -57,6 +70,9 @@ class CaptionSemanticChecker:
         model: str,
         timeout_sec: int,
         max_samples: int,
+        max_transient_retries: int = 5,
+        retry_base_sleep_sec: float = 2.0,
+        retry_sleep_cap_sec: float = 120.0,
         provider: str = "openai",
         base_url: str | None = None,
     ):
@@ -65,6 +81,9 @@ class CaptionSemanticChecker:
         self._model = model
         self._timeout_sec = timeout_sec
         self._max_samples = max(0, max_samples)
+        self._max_transient_retries = max(0, int(max_transient_retries))
+        self._retry_base_sleep_sec = max(0.1, float(retry_base_sleep_sec))
+        self._retry_sleep_cap_sec = max(1.0, float(retry_sleep_cap_sec))
         self._provider = provider
         self._base_url = base_url
 
@@ -110,18 +129,44 @@ class CaptionSemanticChecker:
             ]
             if not frame_paths:
                 continue
-            try:
-                verdict = self._judge_match(
-                    client=client,
-                    caption=row.caption,
-                    frame_paths=frame_paths[:12],
-                )
-            except _FailOpenTransientLLMError as exc:
-                logger.warning(
-                    "Caption semantic transient LLM error for clip_id=%s; fail-open pass: %s",
-                    row.clip_id,
-                    exc,
-                )
+            max_attempts = 1 + self._max_transient_retries
+            verdict: bool | None = None
+            exhausted = False
+            for attempt in range(max_attempts):
+                try:
+                    verdict = self._judge_match(
+                        client=client,
+                        caption=row.caption,
+                        frame_paths=frame_paths[:12],
+                    )
+                    break
+                except _TransientLLMError as exc:
+                    if attempt >= max_attempts - 1:
+                        logger.warning(
+                            "Caption semantic transient errors exhausted for clip_id=%s after %d attempt(s): %s",
+                            row.clip_id,
+                            max_attempts,
+                            exc,
+                        )
+                        failures.append(f"caption_semantic_transient_exhausted:{row.clip_id}")
+                        exhausted = True
+                        break
+                    delay = _retry_delay_from_message(
+                        str(exc),
+                        attempt,
+                        self._retry_base_sleep_sec,
+                        self._retry_sleep_cap_sec,
+                    )
+                    logger.warning(
+                        "Caption semantic transient LLM error clip_id=%s attempt %d/%d; retry in %.1fs: %s",
+                        row.clip_id,
+                        attempt + 1,
+                        max_attempts,
+                        delay,
+                        exc,
+                    )
+                    time.sleep(delay)
+            if exhausted:
                 checked += 1
                 continue
             if verdict is False or verdict is None:
@@ -170,11 +215,7 @@ Caption: {caption}
             return self._parse_match(str(output_text))
         except Exception as exc:
             if _is_transient_llm_error(exc):
-                logger.warning(
-                    "Caption semantic LLM transient error for fail-open validation: %s",
-                    exc,
-                )
-                raise _FailOpenTransientLLMError(str(exc)) from exc
+                raise _TransientLLMError(str(exc)) from exc
             return None
 
     def _frame_data_uri(self, frame_path: Path) -> str:

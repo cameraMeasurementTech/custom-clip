@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nexis.models import ClipRecord
+from nexis.validator import caption_semantic as caption_semantic_mod
 from nexis.validator.caption_semantic import CaptionSemanticChecker
 
 
@@ -58,6 +61,70 @@ def test_parse_match_variants() -> None:
     assert checker._parse_match('{"match": false}') is False
     assert checker._parse_match("```json\n{\"match\": false}\n```") is False
     assert checker._parse_match("nonsense") is None
+
+
+def test_semantic_transient_exhausted_after_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = tmp_path / "c1.jpg"
+    frame.write_bytes(b"frame")
+    calls = {"n": 0}
+
+    def always_transient(self, *, client, caption, frame_paths):
+        calls["n"] += 1
+        raise caption_semantic_mod._TransientLLMError("Error code: 429")
+
+    monkeypatch.setattr(CaptionSemanticChecker, "_judge_match", always_transient)
+    monkeypatch.setattr(caption_semantic_mod.time, "sleep", lambda _s: None)
+
+    checker = CaptionSemanticChecker(
+        enabled=True,
+        api_key="k",
+        model="m",
+        timeout_sec=20,
+        max_samples=8,
+        max_transient_retries=2,
+    )
+    failures = checker.check(
+        sampled=[_row()],
+        frame_paths_by_clip_id={"c1": [frame]},
+    )
+    assert failures == ["caption_semantic_transient_exhausted:c1"]
+    assert calls["n"] == 3
+
+
+def test_semantic_transient_then_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = tmp_path / "c1.jpg"
+    frame.write_bytes(b"frame")
+    calls = {"n": 0}
+
+    def flaky(self, *, client, caption, frame_paths):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise caption_semantic_mod._TransientLLMError("429")
+        return True
+
+    monkeypatch.setattr(CaptionSemanticChecker, "_judge_match", flaky)
+    monkeypatch.setattr(caption_semantic_mod.time, "sleep", lambda _s: None)
+
+    checker = CaptionSemanticChecker(
+        enabled=True,
+        api_key="k",
+        model="m",
+        timeout_sec=20,
+        max_samples=8,
+        max_transient_retries=5,
+    )
+    failures = checker.check(
+        sampled=[_row()],
+        frame_paths_by_clip_id={"c1": [frame]},
+    )
+    assert failures == []
+    assert calls["n"] == 2
+
+
+def test_retry_delay_parses_try_again_in_message() -> None:
+    msg = "Please try again in 10.522s. Visit https://example.com"
+    d = caption_semantic_mod._retry_delay_from_message(msg, attempt=0, base_sleep_sec=2.0, cap_sec=120.0)
+    assert 10.0 < d <= 10.772
 
 
 def test_prompt_injection_keyword_detection() -> None:

@@ -1033,6 +1033,9 @@ def validate(
         model=semantic_model,
         timeout_sec=settings.validator_semantic_timeout_sec,
         max_samples=settings.validator_semantic_max_samples,
+        max_transient_retries=settings.validator_semantic_max_transient_retries,
+        retry_base_sleep_sec=settings.validator_semantic_retry_base_sleep_sec,
+        retry_sleep_cap_sec=settings.validator_semantic_retry_sleep_cap_sec,
         provider=semantic_provider,
         base_url=semantic_base_url,
     )
