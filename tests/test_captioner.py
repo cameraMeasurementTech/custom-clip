@@ -12,6 +12,7 @@ def test_fallback_caption_avoids_url_like_text() -> None:
         source_url="https://youtube.com/watch?v=abc",
         first_frame_path=None,
     )
+    assert caption is not None
     assert "http://" not in caption.lower()
     assert "https://" not in caption.lower()
     assert len(caption.split()) >= 3

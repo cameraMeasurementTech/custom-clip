@@ -272,6 +272,30 @@ class MinerPipeline:
             url,
             frame_paths=caption_frames,
         )
+        if caption is None:
+            logger.info(
+                "prepare skip segment reason=caption_too_short clip_id=%s url=%s",
+                clip_id,
+                url,
+            )
+            self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+            reject_streak = max(0, int(cur.get("prep_reject_streak", 0)))
+            next_seg = seg_index + 1
+            if next_seg >= total_segments:
+                _try_unlink_raw(raw_path)
+                save_segment_cursor(
+                    workdir, (url_index + 1) % n, 0, active_raw=None, prep_reject_streak=0
+                )
+            else:
+                save_segment_cursor(
+                    workdir,
+                    url_index,
+                    next_seg,
+                    active_raw=active_raw,
+                    prep_reject_streak=reject_streak,
+                )
+            return True
+
         record = ClipRecord(
             clip_id=clip_id,
             clip_uri=f"clips/{clip_path.name}",
@@ -462,6 +486,36 @@ class MinerPipeline:
             url,
             frame_paths=caption_frames,
         )
+        if caption is None:
+            logger.info(
+                "prepare skip segment reason=caption_too_short clip_id=%s url=%s worker=%s",
+                clip_id,
+                url,
+                worker_id,
+            )
+            self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+            next_seg = seg_index + 1
+            if next_seg >= total_segments:
+                _try_unlink_raw(raw_path)
+                save_worker_segment_cursor(
+                    wd,
+                    worker_id,
+                    current_url=None,
+                    segment_index=0,
+                    active_raw=None,
+                    prep_reject_streak=0,
+                )
+            else:
+                save_worker_segment_cursor(
+                    wd,
+                    worker_id,
+                    current_url=url,
+                    segment_index=next_seg,
+                    active_raw=active_raw,
+                    prep_reject_streak=reject_streak,
+                )
+            return True
+
         record = ClipRecord(
             clip_id=clip_id,
             clip_uri=f"clips/{clip_path.name}",
@@ -601,6 +655,14 @@ class MinerPipeline:
                     url,
                     frame_paths=caption_frames,
                 )
+                if caption is None:
+                    logger.info(
+                        "skip clip in interval build reason=caption_too_short clip_id=%s source_id=%s",
+                        clip_id,
+                        source_id,
+                    )
+                    self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+                    continue
                 logger.debug(
                     "built clip record clip_id=%s source_id=%s start_sec=%.3f",
                     clip_id,

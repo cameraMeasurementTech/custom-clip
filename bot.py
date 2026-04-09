@@ -13,10 +13,10 @@ DEFAULT_QUERY_VARIANTS = [
     "natural scenery landscape mountains forest lake wilderness aerial timelapse b-roll"
 ]
 
-QUERY = "natural scenery landscape b-roll"
+QUERY = "timelapse clouds sky sunset landscape"
 
 MAX_RESULTS = 50  # per request (max 50)
-TOTAL_VIDEOS = 100  # how many you want
+TOTAL_VIDEOS = 500  # how many you want
 
 BASE_URL = "https://www.googleapis.com/youtube/v3/search"
 

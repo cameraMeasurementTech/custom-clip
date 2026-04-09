@@ -12,7 +12,7 @@ from pathlib import Path
 
 from openai import OpenAI, RateLimitError
 
-from ..protocol import MIN_CAPTION_WORDS
+from ..protocol import CAPTION_SKIP_IF_FEWER_WORDS, MIN_CAPTION_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -214,11 +214,16 @@ class Captioner:
         extra_user_text: str = "",
     ) -> str:
         prompt = (
-            "Write one concise training caption for this 5-second video clip. "
-            "You will receive timeline-sampled frames from the same clip. "
-            "Use all provided frames to describe visible scene and motion in one sentence. "
-            "Describe only concrete visual content and do not speculate. "
-            f"The caption must be at least {MIN_CAPTION_WORDS} words (strictly more than twenty). "
+            "Write one training caption for this 5-second video clip. "
+            "You receive timeline-sampled frames from the same clip—treat them as the only evidence. "
+            "Write a single sentence of caption that a strict visual auditor could verify: every detail must be "
+            "clearly supported by the frames; omit anything not plainly visible (no guesses, causes, "
+            "emotions, or off-screen events). "
+            "Name the main visible subjects and what they are doing; avoid vague filler that could "
+            "apply to many clips (e.g. only “nice scenery” or “a video of outside”). "
+            "Use concrete nouns, colors, materials, lighting, and motion you actually see. "
+            f"The caption must be at least {MIN_CAPTION_WORDS} words to pass downstream checks. "
+            "Do not use the whole words 'match' or 'true' anywhere in the caption (downstream checks reject them). "
             f"Clip file name: {clip_path.name}. Source URL: {source_url}."
         )
         if extra_user_text.strip():
@@ -245,7 +250,8 @@ class Captioner:
         source_url: str,
         first_frame_path: Path | None = None,
         frame_paths: list[Path] | None = None,
-    ) -> str:
+    ) -> str | None:
+        """Return caption text, or ``None`` if the model output is too short (segment should be skipped)."""
         if not self._api_keys:
             logger.warning(
                 "caption fallback used reason=missing_%s_api_key",
@@ -286,32 +292,16 @@ class Captioner:
                         valid_frames=valid_frames,
                     )
                     logger.debug("caption response clip=%s text_len=%d", clip_path.name, len(text))
-                    if text and len(text.strip().lower().split()) < MIN_CAPTION_WORDS:
-                        wc = len(text.strip().lower().split())
+                    wc = len(text.strip().lower().split()) if text else 0
+                    if wc < CAPTION_SKIP_IF_FEWER_WORDS:
                         logger.warning(
-                            "caption too short for protocol clip=%s words=%d min=%d; retrying once",
+                            "caption too short clip=%s words=%d need>=%d; skipping segment (no retry)",
                             clip_path.name,
                             wc,
-                            MIN_CAPTION_WORDS,
+                            CAPTION_SKIP_IF_FEWER_WORDS,
                         )
-                        text = self._chat_completion(
-                            client,
-                            clip_path=clip_path,
-                            source_url=source_url,
-                            valid_frames=valid_frames,
-                            extra_user_text=(
-                                f"Rewrite with at least {MIN_CAPTION_WORDS} words. "
-                                f"Your previous answer had only {wc} words."
-                            ),
-                        )
-                    if text and len(text.strip().lower().split()) < MIN_CAPTION_WORDS:
-                        logger.warning(
-                            "caption still below min words after retry clip=%s words=%d min=%d",
-                            clip_path.name,
-                            len(text.strip().lower().split()),
-                            MIN_CAPTION_WORDS,
-                        )
-                    return text if text else self._fallback_caption()
+                        return None
+                    return text
                 except RateLimitError as exc:
                     last_rl = exc
                     self._penalize_key_after_429(idx, exc)

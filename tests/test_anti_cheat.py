@@ -74,8 +74,10 @@ def test_short_caption_rejects_exactly_twenty_words() -> None:
 
 
 def test_caption_at_min_words_passes_lexical_gate() -> None:
-    twenty_one = " ".join(f"w{i}" for i in range(21))
-    rows = [_row("c1", 0.0, "https://youtube.com/watch?v=abc", caption=twenty_one)]
+    from nexis.protocol import MIN_CAPTION_WORDS
+
+    ok = " ".join(f"w{i}" for i in range(MIN_CAPTION_WORDS))
+    rows = [_row("c1", 0.0, "https://youtube.com/watch?v=abc", caption=ok)]
     result = run_hard_checks(rows)
     assert not any(item.startswith("short_caption:") for item in result.failures)
 

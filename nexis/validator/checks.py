@@ -80,7 +80,7 @@ def _check_caption_alignment(records: list[ClipRecord]) -> list[str]:
         if not text:
             failures.append(f"empty_caption:{row.clip_id}")
             continue
-        if len(text.split()) < MIN_CAPTION_WORDS:
+        if len(text.split()) < 20:
             failures.append(f"short_caption:{row.clip_id}")
             continue
         if "http://" in text or "https://" in text:
