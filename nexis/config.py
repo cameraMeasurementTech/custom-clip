@@ -117,11 +117,11 @@ class Settings(BaseSettings):
         ),
     )
     miner_preflight_semantic: bool = Field(
-        default=True,
+        default=False,
         alias="NEXIS_MINER_PREFLIGHT_SEMANTIC",
         description=(
-            "During miner preflight, also run caption semantic checks (validator-style). "
-            "Uses LLM quota; enable only if you want miner-side parity with semantic validation."
+            "During miner prepare-merge and upload preflight, run caption semantic checks (validator-style). "
+            "Default off (saves LLM cost and time). Set true for extra parity with caption_semantic validation."
         ),
     )
     miner_preflight_category: bool = Field(
