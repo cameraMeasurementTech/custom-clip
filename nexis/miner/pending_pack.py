@@ -17,6 +17,7 @@ from ..specs import DatasetSpecRegistry
 from ..validator.assets import VideoAssetVerifier
 from .preflight import (
     clip_ids_from_all_preflight_failures,
+    clip_ids_from_caption_semantic_failures,
     prune_until_hard_checks_pass,
     run_preflight_on_candidates,
 )
@@ -172,18 +173,21 @@ def merge_validated_pending_record(
 
         failures_llm: list[str] = []
         if want_llm and asset_out is not None:
+            semantic_failures: list[str] = []
             if cfg.caption_semantic_checker is not None and getattr(
                 cfg.caption_semantic_checker, "active", False
             ):
                 chk = getattr(cfg.caption_semantic_checker, "check", None)
                 if callable(chk):
-                    failures_llm.extend(
-                        chk(
-                            sampled=[new_record],
-                            frame_paths_by_clip_id=asset_out.semantic_frames_by_clip_id,
-                        )
+                    semantic_failures = chk(
+                        sampled=[new_record],
+                        frame_paths_by_clip_id=asset_out.semantic_frames_by_clip_id,
                     )
-            if cfg.category_checker is not None and getattr(cfg.category_checker, "active", False):
+                    failures_llm.extend(semantic_failures)
+            bad_semantic = clip_ids_from_caption_semantic_failures(semantic_failures)
+            if new_record.clip_id not in bad_semantic and cfg.category_checker is not None and getattr(
+                cfg.category_checker, "active", False
+            ):
                 cchk = getattr(cfg.category_checker, "check", None)
                 if callable(cchk):
                     failures_llm.extend(
@@ -436,20 +440,46 @@ def append_uploaded_clip_ids(workdir: Path, clip_ids: list[str]) -> None:
 
 
 def remove_clip_ids_from_pending(workdir: Path, remove_ids: set[str]) -> None:
+    """Rewrite ``miner_pending_records.jsonl`` without rows whose ``clip_id`` is in ``remove_ids``.
+
+    Used after a successful R2 pack upload (and after preflight drops) so uploaded clips do not stay in the
+    pending queue. Uses the same POSIX lock as append/merge when ``fcntl`` is available.
+    """
     if not remove_ids:
         return
-    path = workdir.expanduser() / PENDING_RECORDS_JSONL
+    wd = workdir.expanduser().resolve()
+    path = wd / PENDING_RECORDS_JSONL
     if not path.is_file():
         return
-    kept: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        rec = ClipRecord.model_validate_json(s)
-        if rec.clip_id not in remove_ids:
-            kept.append(s)
-    path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    def _rewrite() -> tuple[int, int]:
+        kept: list[str] = []
+        removed_lines = 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            rec = ClipRecord.model_validate_json(s)
+            if rec.clip_id in remove_ids:
+                removed_lines += 1
+            else:
+                kept.append(s)
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        return removed_lines, len(kept)
+
+    if fcntl is None:
+        logger.warning("fcntl unavailable; pending jsonl rewrite is not cross-process safe")
+        removed_lines, remaining = _rewrite()
+    else:
+        with _posix_flock_lock(_pending_lock_path(wd)):
+            removed_lines, remaining = _rewrite()
+
+    logger.info(
+        "miner_pending_records.jsonl: removed %d line(s) for uploaded/processed clip_ids; %d line(s) remain path=%s",
+        removed_lines,
+        remaining,
+        path,
+    )
 
 
 def load_last_pack_block(workdir: Path) -> int | None:
@@ -583,7 +613,7 @@ async def pack_deduped_pending_and_upload(
     r2_prune_uploads_ago: int = 2,
     manifest_busy_wait_sec: float = 1200.0,
     interval_refresher: Callable[[], Awaitable[int]] | None = None,
-    preflight_before_upload: bool = True,
+    preflight_before_upload: bool = False,
     preflight_semantic_checker: Any | None = None,
     preflight_category_checker: Any | None = None,
     spec_registry: DatasetSpecRegistry | None = None,

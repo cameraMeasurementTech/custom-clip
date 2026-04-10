@@ -12,10 +12,20 @@ from ..hash_utils import sha256_file
 from ..miner.youtube import extract_caption_frames, probe_video
 from ..models import ClipRecord
 
-_SEMANTIC_FRAME_COUNT = 6
+# Same count / timeline sampling as miner ``CAPTION_FRAME_COUNT`` (nexis.miner.pipeline) so the semantic
+# judge sees the same JPEGs the caption model used when miner left ``frames/{clip_id}/caption/`` in place.
+_SEMANTIC_FRAME_COUNT = 12
 _REQUIRED_CLIP_WIDTH = 1280
 _REQUIRED_CLIP_HEIGHT = 720
 logger = logging.getLogger(__name__)
+
+
+def list_miner_caption_frame_paths(workdir: Path, clip_id: str) -> list[Path]:
+    """Return sorted ``caption_*.jpg`` under ``frames/{clip_id}/caption/`` if the miner extracted them."""
+    d = workdir.expanduser().resolve() / "frames" / clip_id / "caption"
+    if not d.is_dir():
+        return []
+    return [p for p in sorted(d.glob("caption_*.jpg")) if p.is_file()]
 
 
 @dataclass
@@ -145,11 +155,20 @@ class VideoAssetVerifier:
                 first_frames_by_clip_id[row.clip_id] = frame_path
 
             if clip_ok:
-                clip_frames = extract_caption_frames(
-                    clip_path,
-                    miner_dir / "semantic" / row.clip_id,
-                    frame_count=_SEMANTIC_FRAME_COUNT,
-                )
+                reused = list_miner_caption_frame_paths(root, row.clip_id)
+                if len(reused) >= 3:
+                    clip_frames = reused[:_SEMANTIC_FRAME_COUNT]
+                    logger.debug(
+                        "semantic frames: reuse miner caption dir clip_id=%s n=%d",
+                        row.clip_id,
+                        len(clip_frames),
+                    )
+                else:
+                    clip_frames = extract_caption_frames(
+                        clip_path,
+                        miner_dir / "semantic" / row.clip_id,
+                        frame_count=_SEMANTIC_FRAME_COUNT,
+                    )
                 if frame_ok:
                     if not clip_frames:
                         clip_frames = [frame_path]

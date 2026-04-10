@@ -333,17 +333,36 @@ class NatureCategoryChecker:
                 attempted_call = True
                 try:
                     parsed = self._run_strict_pass(client=client, frame_paths=frame_paths)
+                    n_keys = len(self._api_keys)
+                    logger.info(
+                        "Category strict LLM OK clip_id=%s key_index=%d (of %d keys) "
+                        "sweep_round=%d/%d (prepare/validator gate; separate from miner caption call)",
+                        clip_id,
+                        idx,
+                        n_keys,
+                        round_i + 1,
+                        max_rounds,
+                    )
                     return ("ok", parsed)
                 except _TransientLLMError as exc:
                     last_exc = exc
+                    n_keys = len(self._api_keys)
+                    if idx < n_keys - 1:
+                        nxt = "next=try next API key"
+                    elif round_i < max_rounds - 1:
+                        nxt = "next=backoff sleep then full key sweep from key 0"
+                    else:
+                        nxt = "next=exhausted if this was last round"
                     logger.warning(
-                        "Category strict transient LLM error clip_id=%s key_index=%d/%d sweep=%d/%d: %s",
+                        "Category strict transient LLM error clip_id=%s key_index=%d (of %d keys) "
+                        "sweep_round=%d/%d: %s [%s]",
                         clip_id,
                         idx,
-                        len(self._api_keys) - 1,
+                        n_keys,
                         round_i + 1,
                         max_rounds,
                         exc,
+                        nxt,
                     )
             if not attempted_call:
                 logger.error("Category strict OpenAI client unavailable for all keys clip_id=%s", clip_id)

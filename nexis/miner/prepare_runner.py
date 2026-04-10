@@ -159,6 +159,8 @@ def run_mine_prepare(
         cat: object | None = None
         if settings.miner_preflight_semantic or settings.miner_preflight_category:
             sem, cat = build_preflight_llm_checkers(settings)
+        if settings.miner_prepare_semantic_only:
+            cat = None
         hotkey_label = f"{settings.bt_wallet_name}:{settings.bt_wallet_hotkey}"
         pending_save = PendingSaveValidatorConfig(
             enabled=True,

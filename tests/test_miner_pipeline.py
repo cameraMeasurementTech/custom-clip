@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from nexis.hash_utils import sha256_file
+from nexis.miner.captioner import CaptionClipResult
 from nexis.miner.pipeline import MinerPipeline
 from nexis.serialization import read_dataset_parquet, read_manifest
 from .helpers import LocalObjectStore, run_async
@@ -16,9 +17,10 @@ class _StubCaptioner:
         source_url: str,
         first_frame_path: Path | None = None,
         frame_paths: list[Path] | None = None,
-    ) -> str:
-        _ = source_url, first_frame_path, frame_paths
-        return f"caption for {clip_path.stem}"
+        dataset_category: str | None = None,
+    ) -> CaptionClipResult:
+        _ = source_url, first_frame_path, frame_paths, dataset_category
+        return CaptionClipResult(f"caption for {clip_path.stem}", None)
 
 
 class _StubSourceProvider:
@@ -60,7 +62,7 @@ class _StubSourceProvider:
         _ = src
         output_dir.mkdir(parents=True, exist_ok=True)
         frames: list[Path] = []
-        for index in range(min(2, frame_count)):
+        for index in range(min(3, frame_count)):
             frame = output_dir / f"caption_{index:03d}.jpg"
             frame.write_bytes(f"caption-{index}".encode("utf-8"))
             frames.append(frame)

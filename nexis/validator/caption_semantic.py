@@ -166,6 +166,15 @@ class CaptionSemanticChecker:
                         caption=caption,
                         frame_paths=frame_paths,
                     )
+                    logger.info(
+                        "Caption semantic LLM OK clip_id=%s key_index=%d (of %d keys) "
+                        "sweep_round=%d/%d (vision judge returned a verdict)",
+                        clip_id,
+                        idx,
+                        len(self._api_keys),
+                        round_i + 1,
+                        max_rounds,
+                    )
                     return (False, verdict)
                 except _TransientLLMError as exc:
                     last_exc = exc
@@ -242,6 +251,8 @@ class CaptionSemanticChecker:
                 if path.exists()
             ]
             if not frame_paths:
+                failures.append(f"caption_semantic_frames_missing:{row.clip_id}")
+                checked += 1
                 continue
             try:
                 exhausted, verdict = self._judge_with_key_failover(
@@ -301,6 +312,7 @@ Caption: {caption}
                 model=self._model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=60,
+                temperature=0,
             )
             choice = response.choices[0]
             message = getattr(choice, "message", None)

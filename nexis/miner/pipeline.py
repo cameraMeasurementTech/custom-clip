@@ -21,6 +21,7 @@ from .pending_pack import (
     load_segment_cursor,
     load_worker_segment_cursor,
     merge_validated_pending_record,
+    remove_clip_ids_from_pending,
     save_segment_cursor,
     save_worker_segment_cursor,
 )
@@ -32,6 +33,21 @@ logger = logging.getLogger(__name__)
 CAPTION_FRAME_COUNT = 12
 _VALIDATOR_CLIP_WIDTH = 1280
 _VALIDATOR_CLIP_HEIGHT = 720
+
+
+def _probe_visual_stream_dimensions(path: Path) -> tuple[int, int] | None:
+    """Return width×height from ffprobe (H.264 clip or JPEG/mjpeg frame). None if probe fails."""
+    try:
+        info = probe_video(path)
+        for stream in info.get("streams", []):
+            if str(stream.get("codec_type", "")).lower() == "video":
+                w = int(stream.get("width", 0))
+                h = int(stream.get("height", 0))
+                if w > 0 and h > 0:
+                    return w, h
+    except Exception as exc:
+        logger.warning("probe visual dimensions failed path=%s err=%s", path, exc)
+    return None
 
 
 def _try_unlink_raw(path: Path) -> None:
@@ -73,6 +89,97 @@ def _audio_present(info: dict[str, Any]) -> bool:
     return any(stream.get("codec_type") == "audio" for stream in info.get("streams", []))
 
 
+def _merge_source_proof(source_id: str, category_proof: dict[str, Any] | None) -> dict[str, Any]:
+    proof: dict[str, Any] = {
+        "extractor": "yt-dlp",
+        "source_video_id": source_id,
+    }
+    if category_proof:
+        proof["miner_category_assessment"] = category_proof
+    return proof
+
+
+def _caption_skip_reason_and_category_status(
+    proof: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Map captioner ``category_proof`` to a skip reason and optional category reject details."""
+    skip_reason = "caption_skip"
+    if not isinstance(proof, dict):
+        return skip_reason, None
+    if proof.get("error") == "insufficient_frames_for_category":
+        return "need_three_caption_frames", None
+    if proof.get("strict_decision") == "reject":
+        category_status = {
+            "strict_reason": proof.get("strict_reason"),
+            "nature_score": proof.get("nature_score"),
+            "rival_score": proof.get("rival_score"),
+            "margin": proof.get("margin"),
+        }
+        return "category_not_nature", category_status
+    if proof.get("error") == "caption_too_short":
+        return "caption_too_short", None
+    return skip_reason, None
+
+
+def _log_prepare_skip(
+    *,
+    skip_reason: str,
+    clip_id: str,
+    url: str,
+    category_status: dict[str, Any] | None,
+    worker_id: str | None = None,
+) -> None:
+    if category_status is not None:
+        if worker_id is not None:
+            logger.info(
+                "prepare skip segment reason=%s clip_id=%s url=%s worker=%s category_status=%s",
+                skip_reason,
+                clip_id,
+                url,
+                worker_id,
+                category_status,
+            )
+        else:
+            logger.info(
+                "prepare skip segment reason=%s clip_id=%s url=%s category_status=%s",
+                skip_reason,
+                clip_id,
+                url,
+                category_status,
+            )
+        return
+    if worker_id is not None:
+        logger.info(
+            "prepare skip segment reason=%s clip_id=%s url=%s worker=%s",
+            skip_reason,
+            clip_id,
+            url,
+            worker_id,
+        )
+    else:
+        logger.info(
+            "prepare skip segment reason=%s clip_id=%s url=%s",
+            skip_reason,
+            clip_id,
+            url,
+        )
+
+
+def _purge_pending_upload_queue_if_category_skip(
+    workdir: Path,
+    clip_id: str,
+    skip_reason: str,
+) -> None:
+    """Remove any stale ``clip_id`` row from ``miner_pending_records.jsonl`` when skipping non-nature."""
+    if skip_reason != "category_not_nature":
+        return
+    remove_clip_ids_from_pending(workdir, {clip_id})
+    logger.info(
+        "prepare dropped clip_id from pending upload queue (category not nature) clip_id=%s",
+        clip_id,
+    )
+
+
 class MinerPipeline:
     def __init__(
         self,
@@ -101,16 +208,6 @@ class MinerPipeline:
             append_pending_record(workdir, record)
         return True
 
-    def _clip_output_dimensions(self, clip_path: Path) -> tuple[int, int] | None:
-        try:
-            info = probe_video(clip_path)
-            for stream in info.get("streams", []):
-                if str(stream.get("codec_type", "")).lower() == "video":
-                    return int(stream.get("width", 0)), int(stream.get("height", 0))
-        except Exception as exc:
-            logger.warning("probe output clip failed path=%s err=%s", clip_path, exc)
-        return None
-
     def _scrub_rejected_segment_files(
         self,
         clip_path: Path,
@@ -131,40 +228,58 @@ class MinerPipeline:
         *,
         source_url: str,
     ) -> bool:
-        """If prepare validation requires 1280×720 assets, drop segment files before caption when output mismatches.
+        """Before caption: require encoded clip and first-frame JPEG to be exactly 1280×720 (validator spec).
 
-        Returns True when the encoded clip is rejected; caller should **skip the entire source URL** (not only
-        advance to the next 5s segment), since resolution is typically consistent for the whole download.
+        Returns True when assets are scrubbed; caller should **skip the entire source URL** (not only advance to
+        the next 5s segment), since resolution is typically consistent for the whole download.
         """
-        if not (
-            self._pending_save is not None
-            and self._pending_save.enabled
-            and self._pending_save.run_local_asset_verify
-        ):
-            return False
-        dims = self._clip_output_dimensions(clip_path)
-        if dims is None:
+        clip_dims = _probe_visual_stream_dimensions(clip_path)
+        if clip_dims is None:
             logger.warning(
-                "prepare validation REJECT (probe failed) clip_id=%s url=%s — skipping entire source",
+                "prepare REJECT (clip probe failed) clip_id=%s url=%s — skipping entire source",
                 clip_id,
                 source_url,
             )
             self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
             return True
-        w, h = dims
-        if w == _VALIDATOR_CLIP_WIDTH and h == _VALIDATOR_CLIP_HEIGHT:
-            return False
-        logger.warning(
-            "prepare validation REJECT (resolution) clip_id=%s url=%s got %dx%d require %dx%d — skipping entire source",
-            clip_id,
-            source_url,
-            w,
-            h,
-            _VALIDATOR_CLIP_WIDTH,
-            _VALIDATOR_CLIP_HEIGHT,
-        )
-        self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
-        return True
+        w, h = clip_dims
+        if w != _VALIDATOR_CLIP_WIDTH or h != _VALIDATOR_CLIP_HEIGHT:
+            logger.warning(
+                "prepare REJECT (clip resolution) clip_id=%s url=%s got %dx%d require %dx%d — skipping entire source",
+                clip_id,
+                source_url,
+                w,
+                h,
+                _VALIDATOR_CLIP_WIDTH,
+                _VALIDATOR_CLIP_HEIGHT,
+            )
+            self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+            return True
+        if frame_path.is_file():
+            fdims = _probe_visual_stream_dimensions(frame_path)
+            if fdims is None:
+                logger.warning(
+                    "prepare REJECT (first frame probe failed) clip_id=%s url=%s — skipping entire source",
+                    clip_id,
+                    source_url,
+                )
+                self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+                return True
+            fw, fh = fdims
+            if fw != _VALIDATOR_CLIP_WIDTH or fh != _VALIDATOR_CLIP_HEIGHT:
+                logger.warning(
+                    "prepare REJECT (first frame resolution) clip_id=%s url=%s got %dx%d require %dx%d — "
+                    "skipping entire source",
+                    clip_id,
+                    source_url,
+                    fw,
+                    fh,
+                    _VALIDATOR_CLIP_WIDTH,
+                    _VALIDATOR_CLIP_HEIGHT,
+                )
+                self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+                return True
+        return False
 
     def mine_one_segment(
         self,
@@ -267,18 +382,22 @@ class MinerPipeline:
         )
         if not caption_frames and frame_path.exists():
             caption_frames = [frame_path]
-        caption = self.captioner.caption_clip(
+        cap = self.captioner.caption_clip(
             clip_path,
             url,
             frame_paths=caption_frames,
+            dataset_category=self.dataset_category,
         )
-        if caption is None:
-            logger.info(
-                "prepare skip segment reason=caption_too_short clip_id=%s url=%s",
-                clip_id,
-                url,
+        if cap.caption is None:
+            skip_reason, category_status = _caption_skip_reason_and_category_status(cap.category_proof)
+            _log_prepare_skip(
+                skip_reason=skip_reason,
+                clip_id=clip_id,
+                url=url,
+                category_status=category_status,
             )
             self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+            _purge_pending_upload_queue_if_category_skip(workdir, clip_id, skip_reason)
             reject_streak = max(0, int(cur.get("prep_reject_streak", 0)))
             next_seg = seg_index + 1
             if next_seg >= total_segments:
@@ -312,12 +431,12 @@ class MinerPipeline:
             fps=max(fps, 1.0),
             num_frames=max(int(round(CLIP_DURATION_SEC * max(fps, 1.0))), 1),
             has_audio=has_audio,
-            caption=caption,
+            caption=cap.caption,
             source_video_url=url,
-            source_proof={
-                "extractor": "yt-dlp",
-                "source_video_id": source_id,
-            },
+            source_proof=_merge_source_proof(
+                source_id,
+                cap.category_proof,
+            ),
         )
         if self._persist_pending_record(workdir, record, locked=True):
             reject_streak = 0
@@ -481,19 +600,23 @@ class MinerPipeline:
         )
         if not caption_frames and frame_path.exists():
             caption_frames = [frame_path]
-        caption = self.captioner.caption_clip(
+        cap = self.captioner.caption_clip(
             clip_path,
             url,
             frame_paths=caption_frames,
+            dataset_category=self.dataset_category,
         )
-        if caption is None:
-            logger.info(
-                "prepare skip segment reason=caption_too_short clip_id=%s url=%s worker=%s",
-                clip_id,
-                url,
-                worker_id,
+        if cap.caption is None:
+            skip_reason, category_status = _caption_skip_reason_and_category_status(cap.category_proof)
+            _log_prepare_skip(
+                skip_reason=skip_reason,
+                clip_id=clip_id,
+                url=url,
+                category_status=category_status,
+                worker_id=worker_id,
             )
             self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
+            _purge_pending_upload_queue_if_category_skip(wd, clip_id, skip_reason)
             next_seg = seg_index + 1
             if next_seg >= total_segments:
                 _try_unlink_raw(raw_path)
@@ -532,12 +655,9 @@ class MinerPipeline:
             fps=max(fps, 1.0),
             num_frames=max(int(round(CLIP_DURATION_SEC * max(fps, 1.0))), 1),
             has_audio=has_audio,
-            caption=caption,
+            caption=cap.caption,
             source_video_url=url,
-            source_proof={
-                "extractor": "yt-dlp",
-                "source_video_id": source_id,
-            },
+            source_proof=_merge_source_proof(source_id, cap.category_proof),
         )
         if self._persist_pending_record(wd, record, locked=True):
             reject_streak = 0
@@ -650,17 +770,32 @@ class MinerPipeline:
                 )
                 if not caption_frames and frame_path.exists():
                     caption_frames = [frame_path]
-                caption = self.captioner.caption_clip(
+                cap = self.captioner.caption_clip(
                     clip_path,
                     url,
                     frame_paths=caption_frames,
+                    dataset_category=self.dataset_category,
                 )
-                if caption is None:
-                    logger.info(
-                        "skip clip in interval build reason=caption_too_short clip_id=%s source_id=%s",
-                        clip_id,
-                        source_id,
+                if cap.caption is None:
+                    skip_reason, category_status = _caption_skip_reason_and_category_status(
+                        cap.category_proof
                     )
+                    if category_status is not None:
+                        logger.info(
+                            "skip clip in interval build reason=%s clip_id=%s source_id=%s "
+                            "category_status=%s",
+                            skip_reason,
+                            clip_id,
+                            source_id,
+                            category_status,
+                        )
+                    else:
+                        logger.info(
+                            "skip clip in interval build reason=%s clip_id=%s source_id=%s",
+                            skip_reason,
+                            clip_id,
+                            source_id,
+                        )
                     self._scrub_rejected_segment_files(clip_path, frame_path, frames_dir, clip_id)
                     continue
                 logger.debug(
@@ -685,12 +820,9 @@ class MinerPipeline:
                     fps=max(fps, 1.0),
                     num_frames=max(int(round(CLIP_DURATION_SEC * max(fps, 1.0))), 1),
                     has_audio=has_audio,
-                    caption=caption,
+                    caption=cap.caption,
                     source_video_url=url,
-                    source_proof={
-                        "extractor": "yt-dlp",
-                        "source_video_id": source_id,
-                    },
+                    source_proof=_merge_source_proof(source_id, cap.category_proof),
                 )
                 records.append(record)
                 assets_to_upload[record.clip_uri] = clip_path

@@ -566,7 +566,7 @@ def mine(
     if caption_route == "no_api_key":
         logger.warning(
             "miner caption key missing; set OPENAI_API_KEY and/or NEXIS_OPENAI_API_KEYS, or GEMINI_API_KEY "
-            "(fallback captions until then)"
+            "(clips will be skipped until a caption key is configured)"
         )
     caption_key_list = (
         merge_openai_api_keys(settings.openai_api_key, settings.openai_api_keys_extra)
@@ -605,6 +605,8 @@ def mine(
         cat_chk = None
         if settings.miner_preflight_semantic or settings.miner_preflight_category:
             sem_chk, cat_chk = build_preflight_llm_checkers(settings)
+        if settings.miner_prepare_semantic_only:
+            cat_chk = None
         pending_save = PendingSaveValidatorConfig(
             enabled=True,
             spec_id=active_spec,

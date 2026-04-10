@@ -42,6 +42,7 @@ _SINGLE_CLIP_FAILURE_PREFIXES = frozenset(
         "category_strict_response_invalid",
         "category_strict_reject",
         "category_strict_transient_exhausted",
+        "caption_semantic_frames_missing",
     }
 )
 
@@ -149,6 +150,26 @@ def clip_ids_from_all_preflight_failures(failures: list[str], records: list[Clip
     return ids
 
 
+_CAPTION_SEMANTIC_FAILURE_PREFIXES = (
+    "caption_semantic_injection_keyword:",
+    "caption_semantic_mismatch:",
+    "caption_semantic_rate_limited:",
+    "caption_semantic_transient_exhausted:",
+    "caption_semantic_frames_missing:",
+)
+
+
+def clip_ids_from_caption_semantic_failures(failures: list[str]) -> set[str]:
+    """Clip ids that failed (or could not complete) caption semantic validation."""
+    ids: set[str] = set()
+    for f in failures:
+        for p in _CAPTION_SEMANTIC_FAILURE_PREFIXES:
+            if f.startswith(p):
+                ids.add(f[len(p) :])
+                break
+    return ids
+
+
 def run_preflight_on_candidates(
     *,
     workdir: Path,
@@ -189,24 +210,28 @@ def run_preflight_on_candidates(
         asset_out = verifier.verify_local_workdir(workdir=workdir, sampled=sampled, miner_dir=miner_dir)
         failures = list(asset_out.failures)
 
+        semantic_failures: list[str] = []
         if caption_semantic_checker is not None and getattr(caption_semantic_checker, "active", False):
             check = getattr(caption_semantic_checker, "check", None)
             if callable(check):
-                failures.extend(
-                    check(
-                        sampled=sampled,
-                        frame_paths_by_clip_id=asset_out.semantic_frames_by_clip_id,
-                    )
+                semantic_failures = check(
+                    sampled=sampled,
+                    frame_paths_by_clip_id=asset_out.semantic_frames_by_clip_id,
                 )
+                failures.extend(semantic_failures)
+        bad_semantic = clip_ids_from_caption_semantic_failures(semantic_failures)
+
         if category_checker is not None and getattr(category_checker, "active", False):
             ccheck = getattr(category_checker, "check", None)
             if callable(ccheck):
-                failures.extend(
-                    ccheck(
-                        sampled=sampled,
-                        frame_paths_by_clip_id=asset_out.semantic_frames_by_clip_id,
+                sampled_category = [r for r in sampled if r.clip_id not in bad_semantic]
+                if sampled_category:
+                    failures.extend(
+                        ccheck(
+                            sampled=sampled_category,
+                            frame_paths_by_clip_id=asset_out.semantic_frames_by_clip_id,
+                        )
                     )
-                )
 
         if not failures:
             break
@@ -229,7 +254,7 @@ def run_preflight_on_candidates(
 
 def build_preflight_llm_checkers(settings: "Settings") -> tuple[object | None, object | None]:
     """Optional semantic/category checkers when miner preflight mirrors validator LLM gates."""
-    from ..miner.llm_runtime import openai_api_keys_merged, resolve_llm_runtime
+    from ..miner.llm_runtime import GEMINI_OPENAI_BASE_URL, openai_api_keys_merged, resolve_llm_runtime
     from ..validator.caption_semantic import CaptionSemanticChecker
     from ..validator.category_check import NatureCategoryChecker
 
@@ -237,14 +262,38 @@ def build_preflight_llm_checkers(settings: "Settings") -> tuple[object | None, o
 
     semantic: object | None = None
     if settings.miner_preflight_semantic:
-        prov, key, model, base, _route = resolve_llm_runtime(
-            settings,
-            openai_model=settings.validator_semantic_model,
-        )
-        if prov == "openai":
-            sem_keys = merged_openai if merged_openai else ([key] if key.strip() else [])
+        gemini_key = settings.gemini_api_key.strip()
+        if settings.miner_preflight_semantic_use_gemini and gemini_key:
+            prov = "gemini"
+            model = settings.miner_preflight_semantic_gemini_model.strip() or "gemini-3.1-flash-lite-preview"
+            base = GEMINI_OPENAI_BASE_URL
+            sem_keys = [gemini_key]
+            logger.info(
+                "preflight semantic checker: Gemini model=%s (NEXIS_MINER_PREFLIGHT_SEMANTIC_USE_GEMINI=true)",
+                model,
+            )
+        elif settings.miner_preflight_semantic_use_gemini and not gemini_key:
+            logger.warning(
+                "NEXIS_MINER_PREFLIGHT_SEMANTIC_USE_GEMINI=true but GEMINI_API_KEY is empty; "
+                "using OpenAI for preflight semantic (NEXIS_VALIDATOR_SEMANTIC_MODEL)"
+            )
+            prov, key, model, base, _route = resolve_llm_runtime(
+                settings,
+                openai_model=settings.validator_semantic_model,
+            )
+            if prov == "openai":
+                sem_keys = merged_openai if merged_openai else ([key] if key.strip() else [])
+            else:
+                sem_keys = [key] if key.strip() else []
         else:
-            sem_keys = [key] if key.strip() else []
+            prov, key, model, base, _route = resolve_llm_runtime(
+                settings,
+                openai_model=settings.validator_semantic_model,
+            )
+            if prov == "openai":
+                sem_keys = merged_openai if merged_openai else ([key] if key.strip() else [])
+            else:
+                sem_keys = [key] if key.strip() else []
         semantic = CaptionSemanticChecker(
             enabled=True,
             api_keys=sem_keys,

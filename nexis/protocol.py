@@ -32,11 +32,11 @@ FAILURE_LOOKBACK_INTERVALS = 1
 # Data policy
 CLIP_DURATION_SEC = 5.0
 MIN_CLIP_GAP_SEC = 5.0
-# Lexical caption minimum: captions must be strictly longer than 20 words (platform short_caption gate).
+# Lexical caption minimum: captions must have at least this many words (validator short_caption gate).
 MIN_CAPTION_WORDS = 25
 
 # Miner captioner: if the model returns fewer than this many words, discard and skip the segment (no retry).
-CAPTION_SKIP_IF_FEWER_WORDS = 20
+CAPTION_SKIP_IF_FEWER_WORDS = MIN_CAPTION_WORDS
 
 # Miner prepare (mine_one_segment): advance to next source URL after this many consecutive merge/validation rejects.
 PREP_MAX_CONSECUTIVE_REJECTS_PER_URL = 10

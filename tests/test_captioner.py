@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nexis.miner.captioner import Captioner
+from nexis.miner.captioner import CaptionClipResult, Captioner
 
 
-def test_fallback_caption_avoids_url_like_text() -> None:
+def test_missing_api_key_skips_without_fallback_caption() -> None:
     captioner = Captioner(api_key="", model="gpt-4o-mini")
-    caption = captioner.caption_clip(
+    result = captioner.caption_clip(
         clip_path=Path("clip.mp4"),
         source_url="https://youtube.com/watch?v=abc",
         first_frame_path=None,
     )
-    assert caption is not None
-    assert "http://" not in caption.lower()
-    assert "https://" not in caption.lower()
-    assert len(caption.split()) >= 3
+    assert isinstance(result, CaptionClipResult)
+    assert result.caption is None
+    assert result.category_proof is not None
+    assert result.category_proof.get("error") == "missing_api_key"
 

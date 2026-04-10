@@ -54,7 +54,7 @@ async def _mine_upload_async(
         r2_prune_uploads_ago=r2_prune_uploads_ago,
         manifest_busy_wait_sec=manifest_busy_wait_sec,
         interval_refresher=interval_refresher,
-        preflight_before_upload=bool(settings.miner_preflight_before_upload) if settings else True,
+        preflight_before_upload=bool(settings.miner_preflight_before_upload) if settings else False,
         preflight_semantic_checker=semantic_checker,
         preflight_category_checker=category_checker,
         spec_registry=DatasetSpecRegistry.with_defaults(),

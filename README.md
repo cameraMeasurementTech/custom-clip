@@ -155,7 +155,7 @@ python3 -m nexis.tools.mine_prepare_main \
   --openai-api-keys-extra "${NEXIS_OPENAI_API_KEYS:-}"
 
 # Default: derive interval from chain, repeat every 30 minutes
-python3 -m nexis.tools.mine_upload_main --workdir /path/to/submit --interval 20m
+python3 -m nexis.tools.mine_upload_main --workdir /home/sn/nexisgen/submit --interval 20m
 
 # Custom cadence
 python3 -m nexis.tools.mine_upload_main --workdir /data/pool --interval 15m

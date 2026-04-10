@@ -96,12 +96,24 @@ class Settings(BaseSettings):
             "Set false to only enforce hard checks (YouTube, caption, overlap) if clips are not yet 1280×720."
         ),
     )
-    miner_preflight_before_upload: bool = Field(
+    miner_prepare_semantic_only: bool = Field(
         default=True,
+        alias="NEXIS_MINER_PREPARE_SEMANTIC_ONLY",
+        description=(
+            "When prepare validation runs LLM gates, use only the caption semantic judge (grounding / "
+            "caption_semantic_mismatch-style check). Skip the separate strict category vision call at prepare—"
+            "category is already scored in the miner caption JSON path for nature. Set false to also run "
+            "NatureCategoryChecker during merge (extra latency and API cost)."
+        ),
+    )
+    miner_preflight_before_upload: bool = Field(
+        default=False,
         alias="NEXIS_MINER_PREFLIGHT_BEFORE_UPLOAD",
         description=(
-            "Before R2 pack upload, re-run validator-style filtering on pending (default off when "
-            "NEXIS_MINER_PREPARE_VALIDATE_BEFORE_SAVE=true). Enable for legacy workdirs or extra safety."
+            "If true, before R2 upload re-run preflight (hard checks + optional LLM) on pending rows. "
+            "Default false: mine-prepare already validates when NEXIS_MINER_PREPARE_VALIDATE_BEFORE_SAVE=true; "
+            "mine-upload then packs and uploads without a second LLM pass. Set true for legacy workdirs or an "
+            "extra upload-time safety pass."
         ),
     )
     miner_preflight_semantic: bool = Field(
@@ -113,11 +125,27 @@ class Settings(BaseSettings):
         ),
     )
     miner_preflight_category: bool = Field(
-        default=True,
+        default=False,
         alias="NEXIS_MINER_PREFLIGHT_CATEGORY",
         description=(
             "During miner preflight, also run strict category checks (validator-style). "
             "Uses LLM quota."
+        ),
+    )
+    miner_preflight_semantic_use_gemini: bool = Field(
+        default=False,
+        alias="NEXIS_MINER_PREFLIGHT_SEMANTIC_USE_GEMINI",
+        description=(
+            "When prepare/preflight runs caption semantic checks, call Gemini (OpenAI-compatible API) instead of "
+            "OpenAI, even if OPENAI_API_KEY is set. Requires GEMINI_API_KEY. Captioning still uses OPENAI / "
+            "NEXIS_CAPTION_MODEL unless you only configure Gemini."
+        ),
+    )
+    miner_preflight_semantic_gemini_model: str = Field(
+        default="gemini-3.1-flash-lite-preview",
+        alias="NEXIS_MINER_PREFLIGHT_SEMANTIC_GEMINI_MODEL",
+        description=(
+            "Gemini model id for miner preflight / prepare-merge semantic verification (vision judge)."
         ),
     )
     validator_enabled_specs: str = Field(
