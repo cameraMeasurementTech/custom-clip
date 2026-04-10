@@ -138,7 +138,8 @@ class Settings(BaseSettings):
         description=(
             "When prepare/preflight runs caption semantic checks, call Gemini (OpenAI-compatible API) instead of "
             "OpenAI, even if OPENAI_API_KEY is set. Requires GEMINI_API_KEY. Captioning still uses OPENAI / "
-            "NEXIS_CAPTION_MODEL unless you only configure Gemini."
+            "NEXIS_CAPTION_MODEL unless you only configure Gemini. If the network validator uses OpenAI "
+            "(NEXIS_VALIDATOR_SEMANTIC_MODEL), leaving this false reduces prepare-vs-validator judge drift."
         ),
     )
     miner_preflight_semantic_gemini_model: str = Field(
@@ -194,6 +195,11 @@ class Settings(BaseSettings):
     validator_semantic_model: str = Field(
         default="gpt-4o",
         alias="NEXIS_VALIDATOR_SEMANTIC_MODEL",
+        description=(
+            "Vision model for caption semantic checks (validator and miner preflight when using OpenAI). "
+            "Use the same family you rely on at validation time; a different judge at prepare vs validator "
+            "increases caption_semantic_mismatch surprises."
+        ),
     )
     validator_semantic_timeout_sec: int = Field(
         default=20,

@@ -21,6 +21,7 @@ from openai import (
 )
 
 from ..protocol import CAPTION_SKIP_IF_FEWER_WORDS, MIN_CAPTION_WORDS
+from ..validator.caption_semantic import SEMANTIC_JUDGE_CRITERIA_FOR_MINER
 from ..validator.category_check import (
     get_middle_three_frame_paths,
     parse_strict_pass,
@@ -29,51 +30,49 @@ from ..validator.category_check import (
 
 logger = logging.getLogger(__name__)
 
-# Generation goals aligned with validator hard checks, caption_semantic judge, and injection filter
-# (see nexis.validator.checks._check_caption_alignment, nexis.validator.caption_semantic.CaptionSemanticChecker).
-# Validator vision judge: match only if every important claim is visible AND the caption is specific to THIS clip's
-# main subject/action (not a reusable generic paragraph).
-_CAPTION_CONTENT_RULES = (
-    "You write captions for 5-second clips used in training. You only see timeline-sampled frames—those pixels "
-    "are the sole evidence. A separate automated vision model will read your caption and the same images; it "
-    "returns pass only if your text is a faithful, specific description of what is on screen. Write so that pass "
-    "is likely.\n\n"
-    "Lexical / platform gates (must all hold):\n"
-    f"- Output at least {MIN_CAPTION_WORDS} words (whitespace-separated). "
-    f"Below that length the caption is discarded.\n"
-    "- One or two sentences; never paste URLs.\n"
-    "- No http://, https://, or URL-like strings.\n"
-    "- Never use the whole words 'match' or 'true' (case-insensitive; blocked downstream).\n\n"
-    "Semantic check (same bar as validation—optimize for this):\n"
-    "The judge fails the caption if: anything in it is contradicted by the frames; any important stated detail "
-    "is not clearly visible; the text is too generic to identify this clip's main visible subject or action; or "
-    "the text guesses beyond what the frames show (causes you cannot see, audio, off-screen events, unstated "
-    "identities, mood without visible cues).\n"
-    "The judge passes only if every substantive claim is visible in the frames AND the caption is specific "
-    "enough that it describes this clip's main content, not a generic scene.\n\n"
-    "How to describe the frames exactly (do this in order):\n"
-    "1) State in plain words the single clearest visible focus: the main object, region, person, animal, or "
-    "action that occupies attention (what a viewer would say is 'what this clip shows').\n"
-    "2) Add only details you can literally point to in the images: colors, materials, weather/light (haze, sun, "
-    "shadows), water or ground texture, built structures, vegetation type, horizon or skyline shape, and where "
-    "things sit (foreground, midground, background, left/right). Phrase each detail as something visible, not "
-    "as a story or interpretation.\n"
-    "3) If frames show motion or change across time, say what moves or changes in simple verbs; if the view is "
-    "static, say so.\n"
-    "4) Reach the word minimum by adding more precise visible detail—not generic filler. Avoid slogan-like or "
-    "travel-brochure wording unless each phrase is tied to something you see (e.g. 'pale mist along the ridge' "
-    "only if that mist appears).\n\n"
-    "Hard avoids (instant semantic fail):\n"
-    "- Inventing people, animals, objects, text, or buildings not clearly in the frames.\n"
-    "- Exact counts (three birds, five windows) unless plainly countable.\n"
-    "- Stock descriptions that could fit many videos; every clause should fit only this view.\n"
-    "- Sounds, speech, music, narrator intent, or 'the camera' / production language.\n\n"
-    "Before you output, check: each noun phrase refers to something visible; the main subject or action is "
-    "unambiguous; nothing is implied that the frames do not show."
+# Aligned with validator hard checks, caption_semantic judge, and injection filter (see nexis.validator.*).
+_CAPTION_CONTENT_RULES = "\n\n".join(
+    [
+        "[1] ROLE\n"
+        "You caption a single 5-second training clip. Your only evidence is the timeline-sampled image(s) in this "
+        "request (pixels you see). A later automated vision step may re-check your caption against the same kind "
+        "of frames.",
+        "[2] GOAL\n"
+        "Produce a caption that is (a) literally grounded in what is visible, (b) specific to this clip, and "
+        "(c) long and concrete enough to pass the semantic gate in section [3].",
+        "[3] SEMANTIC GATE — PRODUCTION RULES (WORDING FIXED; FOLLOW EXACTLY)\n"
+        f"{SEMANTIC_JUDGE_CRITERIA_FOR_MINER}\n"
+        "Your caption must be written so that a strict judge applying the rules above returns match true.",
+        "[4] FORMAT & TEXT RULES (ALL REQUIRED)\n"
+        f"- Length: at least {MIN_CAPTION_WORDS} words (whitespace-separated). Shorter text is rejected.\n"
+        "- Shape: one or two sentences.\n"
+        "- No URLs: do not include http://, https://, or URL-like strings.\n"
+        "- Forbidden tokens: do not use the whole words 'match' or 'true' as normal words (case-insensitive; "
+        "downstream filter). Rephrase (e.g. 'accurate', 'correct', 'aligned') if needed.",
+        "[5] HOW TO COMPOSE THE CAPTION (ORDER)\n"
+        "Step A — Main focus: One clear phrase for what dominates the view (subject, place, or visible action).\n"
+        "Step B — Observable detail: Add 2+ concrete, checkable facts from the images: color, material, light "
+        "(sun, shadow, haze), texture, structure, vegetation, horizon/skyline, layout (foreground / mid / "
+        "background, left / right). Every phrase must be point-to-able in the frames.\n"
+        "Step C — Time: If motion or change is visible across frames, name it with simple verbs; if static, say "
+        "the view is still.\n"
+        "Step D — Word count: Add only extra *visible* detail to reach the minimum; avoid generic praise or "
+        "filler unless tied to something seen.",
+        "[6] DO NOT (COMMON REJECTIONS)\n"
+        "- Do not invent people, animals, objects, readable text, or buildings not clearly present.\n"
+        "- Do not use exact counts (e.g. three birds) unless obviously countable.\n"
+        "- Do not use stock lines that could describe unrelated clips.\n"
+        "- Do not mention sound, speech, music, or camera/production intent.",
+        "[7] SELF-CHECK (MENTAL, BEFORE YOU ANSWER)\n"
+        "- Every noun phrase: visible in the frames?\n"
+        "- Main subject or action: obvious and specific to this clip?\n"
+        "- Any claim not shown? Remove it.",
+    ]
 )
 
 _CAPTION_PLAIN_OUTPUT_LINE = (
-    "Output only the caption text, with no title, quotes, or preamble."
+    "[8] FINAL OUTPUT (PLAIN CAPTION PATH ONLY)\n"
+    "Return only the caption string. No title, no quotes around the whole caption, no preamble or markdown."
 )
 
 # Plain-text caption path: rules + how to format the assistant reply.
@@ -92,38 +91,50 @@ def _nature_miner_json_response_spec(
     referenced in caption rules (do not paste the URL into the caption text).
     """
     i0, i1, i2 = middle_indices
-    return (
-        "Context (for this clip only; do not paste the URL or filename into the caption text):\n"
-        f"- Clip file name: {clip_name}\n"
-        f"- Source URL: {source_url}\n\n"
-        "=== STRUCTURED OUTPUT (mandatory) ===\n"
-        "Your entire reply must be one JSON object only (no markdown fences, no commentary). "
-        'It must have exactly two top-level keys: "caption" and "frames".\n\n'
-        'Key "caption": string. It must obey every caption rule in the section above (same constraints as a '
-        "standalone caption).\n\n"
-        'Key "frames": JSON array of length exactly 3. Each element is one object with these keys only:\n'
-        '  - "frame_index": integer, one of 0, 1, 2 (chronological order within the three middle samples)\n'
-        '  - "winner": string, one of: nature, people, animal, vehicle, urban, indoor, other\n'
-        '  - "nature_score", "people_score", "animal_score", "vehicle_score", "urban_score", "indoor_score": '
-        "each a number from 0.0 through 1.0\n\n"
-        "The images below are in strict time order; image index 0 is the earliest. "
-        "Score only the three MIDDLE timeline frames: they are at positions "
-        f"{i0}, {i1}, and {i2} (0-based indices in the image list). "
-        "Produce one frames[] object per middle frame in chronological order; set frame_index to 0, 1, and 2.\n\n"
-        "Category scoring rules (each frames[] object must be consistent with these):\n"
-        "- nature wins only when natural scenery is the main subject.\n"
-        "- If a person is central and dominant, winner must not be nature.\n"
-        "- If an animal is the main subject, winner must not be nature.\n"
-        "- If a vehicle, city/urban, or indoor scene dominates, winner must not be nature.\n\n"
-        "Example shape (values are illustrative; replace with your scores and caption):\n"
-        '{"caption": "(long grounded caption here …)", "frames": ['
-        '{"frame_index":0,"winner":"nature","nature_score":0.8,"people_score":0.1,'
-        '"animal_score":0.0,"vehicle_score":0.0,"urban_score":0.0,"indoor_score":0.0}, '
-        '{"frame_index":1,"winner":"urban","nature_score":0.2,"people_score":0.15,'
-        '"animal_score":0.0,"vehicle_score":0.0,"urban_score":0.8,"indoor_score":0.0}, '
-        '{"frame_index":2,"winner":"nature","nature_score":0.78,"people_score":0.12,'
-        '"animal_score":0.0,"vehicle_score":0.0,"urban_score":0.0,"indoor_score":0.0}'
-        "]}\n"
+    return "\n\n".join(
+        [
+            "[JSON] CONTEXT (METADATA — DO NOT COPY INTO THE CAPTION)\n"
+            f"- clip_file_name: {clip_name}\n"
+            f"- source_url: {source_url}\n"
+            "Do not paste the URL or filename into the caption string.",
+            "[JSON] IMAGE ORDER\n"
+            "Images in this request are in strict time order: index 0 = earliest, then increasing time.",
+            "[JSON] REQUIRED RESPONSE\n"
+            "Return exactly one JSON object (no markdown code fences, no text before or after).\n"
+            "Top-level keys must be only these two, both required:\n"
+            '  - "caption" (string)\n'
+            '  - "frames" (array)',
+            '[JSON] KEY "caption"\n'
+            "- Type: string.\n"
+            "- Content: obey every rule in sections [1]–[7] above (same as plain caption path).\n"
+            "- Purpose: literal visual description of this clip for training (text-to-video style datasets).",
+            '[JSON] KEY "frames"\n'
+            "- Type: array of exactly 3 objects (one per middle frame, chronological order).\n"
+            "Each object must contain only these keys:\n"
+            '  - "frame_index": integer, must be 0, 1, or 2 (0 = earliest of the three middle samples)\n'
+            '  - "winner": one of: nature | people | animal | vehicle | urban | indoor | other\n'
+            '  - "nature_score", "people_score", "animal_score", "vehicle_score", "urban_score", "indoor_score": '
+            "each a number from 0.0 to 1.0 inclusive",
+            "[JSON] WHICH IMAGES TO SCORE\n"
+            "Score only the three MIDDLE timeline images. In the full image list (0-based), their indices are: "
+            f"{i0}, {i1}, {i2}.\n"
+            'Emit frames[0], frames[1], frames[2] matching that time order; set "frame_index" to 0, 1, 2 '
+            "respectively.",
+            "[JSON] CATEGORY RULES (PER-OBJECT CONSISTENCY)\n"
+            "- winner = nature only if natural scenery is the dominant main subject in that frame.\n"
+            "- If a person is central and dominant → winner must not be nature.\n"
+            "- If an animal is the main subject → winner must not be nature.\n"
+            "- If vehicle, city/urban, or indoor dominates → winner must not be nature.\n"
+            "Scores should agree with the chosen winner (highest score on the winning category).",
+            "[JSON] EXAMPLE SHAPE (ILLUSTRATIVE VALUES — REPLACE ALL)\n"
+            '{"caption": "(long grounded caption …)", "frames": ['
+            '{"frame_index":0,"winner":"nature","nature_score":0.8,"people_score":0.1,'
+            '"animal_score":0.0,"vehicle_score":0.0,"urban_score":0.0,"indoor_score":0.0}, '
+            '{"frame_index":1,"winner":"urban","nature_score":0.2,"people_score":0.15,'
+            '"animal_score":0.0,"vehicle_score":0.0,"urban_score":0.8,"indoor_score":0.0}, '
+            '{"frame_index":2,"winner":"nature","nature_score":0.78,"people_score":0.12,'
+            '"animal_score":0.0,"vehicle_score":0.0,"urban_score":0.0,"indoor_score":0.0}]}',
+        ]
     )
 
 

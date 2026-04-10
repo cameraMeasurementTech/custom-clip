@@ -10,7 +10,12 @@ from typing import Any
 
 from ..hash_utils import deterministic_clip_id, sha256_file
 from ..models import ClipRecord, IntervalManifest
-from ..protocol import CLIP_DURATION_SEC, PREP_MAX_CONSECUTIVE_REJECTS_PER_URL, SCHEMA_VERSION
+from ..protocol import (
+    CLIP_DURATION_SEC,
+    PREP_MAX_CLIP_START_SEC,
+    PREP_MAX_CONSECUTIVE_REJECTS_PER_URL,
+    SCHEMA_VERSION,
+)
 from ..serialization import write_dataset_parquet, write_manifest
 from ..specs import DEFAULT_SPEC_ID
 from .captioner import Captioner
@@ -352,6 +357,21 @@ class MinerPipeline:
             )
             return True
 
+        start = float(seg_index) * CLIP_DURATION_SEC
+        if start > PREP_MAX_CLIP_START_SEC:
+            logger.warning(
+                "prepare skip entire source (clip_start_sec %.1f > %.1f) source_id=%s url=%s",
+                start,
+                PREP_MAX_CLIP_START_SEC,
+                source_id,
+                url,
+            )
+            _try_unlink_raw(raw_path)
+            save_segment_cursor(
+                workdir, (url_index + 1) % n, 0, active_raw=None, prep_reject_streak=0
+            )
+            return True
+
         stream = _video_stream(probe)
         width = int(stream.get("width", 1))
         height = int(stream.get("height", 1))
@@ -360,7 +380,6 @@ class MinerPipeline:
         fps = float(numerator) / max(float(denominator), 1.0)
         has_audio = _audio_present(probe)
 
-        start = float(seg_index) * CLIP_DURATION_SEC
         clip_id = deterministic_clip_id(source_id, start, CLIP_DURATION_SEC)
         clip_path = clips_dir / f"{clip_id}.mp4"
         frame_path = frames_dir / f"{clip_id}.jpg"
@@ -561,6 +580,31 @@ class MinerPipeline:
             )
             return True
 
+        start = float(seg_index) * CLIP_DURATION_SEC
+        if start > PREP_MAX_CLIP_START_SEC:
+            logger.warning(
+                "prepare skip entire source (clip_start_sec %.1f > %.1f) source_id=%s url=%s worker=%s",
+                start,
+                PREP_MAX_CLIP_START_SEC,
+                source_id,
+                url,
+                worker_id,
+            )
+            _try_unlink_raw(raw_path)
+            save_worker_segment_cursor(
+                wd,
+                worker_id,
+                current_url=None,
+                segment_index=0,
+                active_raw=None,
+                prep_reject_streak=0,
+            )
+            logger.info(
+                "prepare dequeue worker=%s: skipped source past max start; next run pops next line from sources",
+                worker_id,
+            )
+            return True
+
         stream = _video_stream(probe)
         width = int(stream.get("width", 1))
         height = int(stream.get("height", 1))
@@ -569,7 +613,6 @@ class MinerPipeline:
         fps = float(numerator) / max(float(denominator), 1.0)
         has_audio = _audio_present(probe)
 
-        start = float(seg_index) * CLIP_DURATION_SEC
         clip_id = deterministic_clip_id(source_id, start, CLIP_DURATION_SEC)
         clip_path = clips_dir / f"{clip_id}.mp4"
         frame_path = frames_dir / f"{clip_id}.jpg"
@@ -757,7 +800,16 @@ class MinerPipeline:
             has_audio = _audio_present(probe)
 
             for idx in range(total_segments):
-                start = idx * CLIP_DURATION_SEC
+                start = float(idx) * CLIP_DURATION_SEC
+                if start > PREP_MAX_CLIP_START_SEC:
+                    logger.warning(
+                        "interval build skip rest of source (clip_start_sec %.1f > %.1f) source_id=%s url=%s",
+                        start,
+                        PREP_MAX_CLIP_START_SEC,
+                        source_id,
+                        url,
+                    )
+                    break
                 clip_id = deterministic_clip_id(source_id, start, CLIP_DURATION_SEC)
                 clip_path = clips_dir / f"{clip_id}.mp4"
                 frame_path = frames_dir / f"{clip_id}.jpg"

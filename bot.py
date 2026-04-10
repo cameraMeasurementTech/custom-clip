@@ -13,7 +13,7 @@ DEFAULT_QUERY_VARIANTS = [
     "natural scenery landscape mountains forest lake wilderness aerial timelapse b-roll"
 ]
 
-QUERY = "timelapse clouds sky sunset landscape"
+QUERY = "nature landscape scenery 4K drone aerial mountains forest lake ocean calm wide shot slow cinematic stock footage ambient"
 
 MAX_RESULTS = 50  # per request (max 50)
 TOTAL_VIDEOS = 500  # how many you want
@@ -28,7 +28,7 @@ _SEARCH_ORDERS = ("relevance", "date", "viewCount", "rating", "title", "videoCou
 #   the Data API has no "exactly 720p" or "max 720p" filter — only high vs standard vs any.
 # - videoDuration=long → longer than 20 minutes (API bucket for "long" content).
 # VIDEO_DEFINITION = "high"  # "any" | "high" | "standard"
-VIDEO_DURATION = "medium"  # "any" | "short" (<4m) | "medium" (4–20m) | "long" (>20m)
+VIDEO_DURATION = "long"  # "any" | "short" (<4m) | "medium" (4–20m) | "long" (>20m)
 
 
 def resolve_search_query() -> str:

@@ -13,6 +13,21 @@ from ..models import ClipRecord
 
 logger = logging.getLogger(__name__)
 
+# Miner caption prompts import this so generation targets the same bar as validation (keep in sync with
+# ``_judge_match``).
+SEMANTIC_JUDGE_CRITERIA_FOR_MINER = (
+    "The judge returns JSON {\"match\": true} or {\"match\": false} using ONLY these rules:\n"
+    "Return false if:\n"
+    "- any part of the caption is contradicted by the frames\n"
+    "- any important detail is not visually supported\n"
+    "- the caption is overly generic and fails to capture the main visible subject or action\n"
+    "- the caption includes speculation or inference beyond the frames\n"
+    "Return true only if the caption is both visually supported and specific enough to describe the clip's "
+    "main content.\n"
+    "The images are timeline-sampled from the same short clip (time order left-to-right in the request); "
+    "every substantive caption claim must be supported across what they show together."
+)
+
 _PROMPT_INJECTION_CAPTION_RE = re.compile(r"\b(?:match|true)\b", re.IGNORECASE)
 _TRANSIENT_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _TRANSIENT_LLM_ERROR_HINTS = (
@@ -283,22 +298,13 @@ class CaptionSemanticChecker:
         return bool(_PROMPT_INJECTION_CAPTION_RE.search(caption))
 
     def _judge_match(self, *, client: object, caption: str, frame_paths: list[Path]) -> bool | None:
-        prompt = f"""
-You are validating whether a caption is accurately grounded in timeline-sampled frames from a short video clip.
-
-Return JSON only:
-{{"match": true}} or {{"match": false}}
-
-Return false if:
-- any part of the caption is contradicted by the frames
-- any important detail is not visually supported
-- the caption is overly generic and fails to capture the main visible subject or action
-- the caption includes speculation or inference beyond the frames
-
-Return true only if the caption is both visually supported and specific enough to describe the clip's main content.
-
-Caption: {caption}
-"""
+        prompt = (
+            "You are validating whether a caption is accurately grounded in timeline-sampled frames from a "
+            "short video clip.\n\n"
+            f"{SEMANTIC_JUDGE_CRITERIA_FOR_MINER}\n\n"
+            "Output: a single JSON object with one boolean field \"match\" (no markdown, no other keys).\n\n"
+            f"Caption: {caption}"
+        )
         content = [{"type": "text", "text": prompt}]
         for frame_path in frame_paths:
             content.append(
@@ -307,13 +313,17 @@ Caption: {caption}
                     "image_url": {"url": self._frame_data_uri(frame_path)},
                 }
             )
+        create_kwargs: dict[str, object] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 60,
+            "temperature": 0,
+        }
+        # Gemini OpenAI-compat vision calls may reject json_object mode; OpenAI supports it for gpt-4o-class.
+        if self._provider == "openai":
+            create_kwargs["response_format"] = {"type": "json_object"}
         try:
-            response = client.chat.completions.create(  # type: ignore[attr-defined]
-                model=self._model,
-                messages=[{"role": "user", "content": content}],
-                max_tokens=60,
-                temperature=0,
-            )
+            response = client.chat.completions.create(**create_kwargs)  # type: ignore[arg-type]
             choice = response.choices[0]
             message = getattr(choice, "message", None)
             output_text = getattr(message, "content", "") if message is not None else ""

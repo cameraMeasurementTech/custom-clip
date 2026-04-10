@@ -31,6 +31,9 @@ FAILURE_LOOKBACK_INTERVALS = 1
 
 # Data policy
 CLIP_DURATION_SEC = 5.0
+# Mine-prepare / run_interval: if the next segment's start time exceeds this, skip the rest of that source
+# (advance to next URL or break the per-source loop). Seconds from t=0 of the downloaded file.
+PREP_MAX_CLIP_START_SEC = 4500.0
 MIN_CLIP_GAP_SEC = 5.0
 # Lexical caption minimum: captions must have at least this many words (validator short_caption gate).
 MIN_CAPTION_WORDS = 25

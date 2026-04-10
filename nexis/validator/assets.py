@@ -107,9 +107,8 @@ class VideoAssetVerifier:
                         clip_frames = [frame_path]
                     while len(clip_frames) < _SEMANTIC_FRAME_COUNT:
                         clip_frames.append(frame_path)
-                    clip_frames.append(frame_path)
                 semantic_frames_by_clip_id[row.clip_id] = [
-                    frame for frame in clip_frames if frame.exists()
+                    frame for frame in clip_frames[:_SEMANTIC_FRAME_COUNT] if frame.exists()
                 ]
         return AssetVerificationResult(
             failures=failures,
@@ -174,9 +173,8 @@ class VideoAssetVerifier:
                         clip_frames = [frame_path]
                     while len(clip_frames) < _SEMANTIC_FRAME_COUNT:
                         clip_frames.append(frame_path)
-                    clip_frames.append(frame_path)
                 semantic_frames_by_clip_id[row.clip_id] = [
-                    frame for frame in clip_frames if frame.exists()
+                    frame for frame in clip_frames[:_SEMANTIC_FRAME_COUNT] if frame.exists()
                 ]
         return AssetVerificationResult(
             failures=failures,
