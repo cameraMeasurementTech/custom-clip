@@ -13,7 +13,7 @@ DEFAULT_QUERY_VARIANTS = [
     "natural scenery landscape mountains forest lake wilderness aerial timelapse b-roll"
 ]
 
-QUERY = "nature landscape scenery 4K drone aerial mountains forest lake ocean calm wide shot slow cinematic stock footage ambient"
+QUERY = "nature landscape scenery without human, animal, or man-made objects"
 
 MAX_RESULTS = 50  # per request (max 50)
 TOTAL_VIDEOS = 500  # how many you want

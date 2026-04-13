@@ -117,11 +117,12 @@ class Settings(BaseSettings):
         ),
     )
     miner_preflight_semantic: bool = Field(
-        default=False,
+        default=True,
         alias="NEXIS_MINER_PREFLIGHT_SEMANTIC",
         description=(
             "During miner prepare-merge and upload preflight, run caption semantic checks (validator-style). "
-            "Default off (saves LLM cost and time). Set true for extra parity with caption_semantic validation."
+            "Uses OPENAI_API_KEY / NEXIS_OPENAI_API_KEYS and NEXIS_VALIDATOR_SEMANTIC_MODEL unless "
+            "NEXIS_MINER_PREFLIGHT_SEMANTIC_USE_GEMINI=true. Set false to skip (saves LLM cost and time)."
         ),
     )
     miner_preflight_category: bool = Field(

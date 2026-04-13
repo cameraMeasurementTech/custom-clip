@@ -14,10 +14,8 @@ Configuration is read from `.env` in the current working directory (and defaults
 If `nexis` is missing or is an older install, use the same logic via `python -m` (install the package from this repo first, e.g. `pip install -e ".[dev]"`):
 
 ```bash
-python3 -m nexis.tools.mine_prepare_main --workdir /data/pool --sources urls.txt \
-  --openai-api-key "$OPENAI_API_KEY" --openai-api-keys-extra "sk-second,sk-third"
 
-python3 -m nexis.tools.mine_upload_main --workdir /data/pool
+python3 -m nexis.tools.mine_upload_main --workdir /home/custom-clip/submit --every 20m
 # Repeats every 30m by default; chain interval id is computed from the current block.
 # One upload then exit: --every once
 # Override id: --interval-id 1234560
